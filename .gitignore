@@ -10,6 +10,13 @@ venv/
 
 data/panel.db
 incidents/
+data/incidents/
+data/reports/
+*.jsonl
+*.ndjson
+*incident*.csv
+*incident*.xlsx
+*incident*.pdf
 
 *.log
 

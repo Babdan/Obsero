@@ -432,7 +432,11 @@ def results_collector_thread(mp_out_q: mp.Queue,
         except Exception:
             continue
 
-        tag_lower = tag.lower()
+        # Workers may emit names like "ppe_gpu0"; normalize to config key "ppe".
+        model_key = (w_model_key or tag).lower()
+        if "_gpu" in model_key:
+            model_key = model_key.split("_gpu", 1)[0]
+        event_tag = model_key.upper()
 
         # --- get raw snapshot for this camera ---
         with raw_lock:
@@ -444,7 +448,7 @@ def results_collector_thread(mp_out_q: mp.Queue,
         if frame is None:
             continue
 
-        keywords = model_keywords.get(tag_lower, [])
+        keywords = model_keywords.get(model_key, [])
         positive_for_gate = False
 
         xyxy_list, conf_list, cls_list = [], [], []
@@ -461,19 +465,19 @@ def results_collector_thread(mp_out_q: mp.Queue,
                     best_det = (name, conf_val, [x1, y1, x2, y2])
 
         # --- temporal gate ---
-        fired = gate_mgr.feed(camera_id, tag_lower, positive_for_gate)
+        fired = gate_mgr.feed(camera_id, model_key, positive_for_gate)
 
         if fired and best_det is not None:
             det_name, det_conf, det_xyxy = best_det
             # additional per-tag cooldown check
             now = time.time()
-            cd = per_tag_cooldown.get(tag, default_cooldown)
-            emit_key = (tag, camera_id)
+            cd = per_tag_cooldown.get(event_tag, default_cooldown)
+            emit_key = (event_tag, camera_id)
             if now - last_emit.get(emit_key, 0.0) >= cd:
                 last_emit[emit_key] = now
                 _save_incident_with_evidence(
-                    frame, tag, det_name, det_conf, det_xyxy,
-                    camera_id, w_gpu_id, w_model_key, gate_mgr, incidents_ring
+                    frame, event_tag, det_name, det_conf, det_xyxy,
+                    camera_id, w_gpu_id, model_key, gate_mgr, incidents_ring
                 )
 
         # --- push detections for live view overlay ---
@@ -485,7 +489,7 @@ def results_collector_thread(mp_out_q: mp.Queue,
                     np.array(xyxy_list, dtype=np.float32),
                     np.array(conf_list, dtype=np.float32),
                     np.array(cls_list, dtype=np.int32),
-                    names, tag
+                    names, event_tag
                 ))
             except queue.Full:
                 pass

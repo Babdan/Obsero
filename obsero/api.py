@@ -31,7 +31,8 @@ from fastapi.responses import (HTMLResponse, StreamingResponse,
                                 JSONResponse, PlainTextResponse, FileResponse,
                                 RedirectResponse)
 from fastapi.staticfiles import StaticFiles
-from obsero.config import CameraCfg, CAMERAS_JSON_PATH
+from obsero.config import CameraCfg, CAMERAS_JSON_PATH, CONFIG_PATH
+import yaml
 
 # ── paths ──
 ROOT = Path(__file__).resolve().parent.parent
@@ -352,7 +353,9 @@ HOME_HTML = """
       border:1px solid #5a2c00;color:#1a0f08;border-radius:8px;padding:8px 12px;cursor:pointer;font-weight:600}
     button:hover{filter:brightness(1.05)}
     .grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
-    img.stream,img.snap{width:100%;height:auto;border-radius:8px;border:1px solid #233445}
+    .stream-frame{position:relative;width:100%;aspect-ratio:16/9;max-height:72vh;border-radius:8px;border:1px solid #233445;background:#05080d;overflow:hidden}
+    img.stream{width:100%;height:100%;object-fit:contain;object-position:center center;display:block}
+    img.snap{width:100%;height:auto;border-radius:8px;border:1px solid #233445;object-fit:cover;object-position:center center}
     .badge{display:inline-block;background:#1f2b37;border:1px solid #324559;color:#ffd8bd;padding:2px 8px;border-radius:999px;font-size:12px}
     .loader{position:relative;min-height:120px;display:grid;place-items:center}
     .spinner{width:38px;height:38px;border-radius:50%;border:4px solid rgba(255,122,26,.25);border-top-color:var(--accent);animation:spin 1s linear infinite}
@@ -390,8 +393,10 @@ HOME_HTML = """
           <select id="camSelect"></select>
           <button id="t-switch" onclick="switchCam()">Switch to Camera</button>
         </div>
-        <div class="loader"><div class="spinner" id="liveSpin"></div></div>
-        <img id="live" class="stream" src="" style="display:none"/>
+        <div class="stream-frame">
+          <div class="loader" id="liveLoader"><div class="spinner" id="liveSpin"></div></div>
+          <img id="live" class="stream" src="" style="display:none"/>
+        </div>
         <div class="small" id="statusLine"></div>
       </div>
       <div class="card">
@@ -416,6 +421,13 @@ HOME_HTML = """
   <section id="panelSettings" class="hidden">
     <div class="card">
       <h2 id="t-settings">Settings</h2>
+      <div class="small">Minimum re-detection duration suppresses duplicate alerts for the same camera/event.</div>
+      <div class="row" style="margin-top:10px">
+        <label for="repeatSec" class="small">Repeat Duration (sec)</label>
+        <input id="repeatSec" type="number" min="1" step="1" value="8" style="width:120px;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/>
+        <button class="ghost" onclick="saveRepeatDuration()">Save</button>
+      </div>
+      <div id="settingsMsg" class="small"></div>
       <div class="small">Factory reset removes current camera configuration and takes you back to setup.</div>
       <div class="row" style="margin-top:10px">
         <button onclick="factoryReset()">Factory Reset</button>
@@ -486,12 +498,35 @@ async function factoryReset(){
     showOverlay(false);
   }
 }
+async function loadRepeatDuration(){
+  try{
+    const r = await fetch('/api/settings/repeat_duration');
+    const d = await r.json();
+    if(r.ok && d.ok){
+      document.getElementById('repeatSec').value = Math.max(1, Math.round(d.seconds));
+    }
+  } catch(_e){ }
+}
+async function saveRepeatDuration(){
+  const msg = document.getElementById('settingsMsg');
+  const seconds = Math.max(1, Math.round(Number(document.getElementById('repeatSec').value || 1)));
+  msg.textContent = 'Saving...';
+  const r = await fetch('/api/settings/repeat_duration?seconds='+encodeURIComponent(seconds), {method:'POST'});
+  const d = await r.json();
+  if(!r.ok || !d.ok){
+    msg.textContent = 'Failed to save repeat duration.';
+    return;
+  }
+  msg.textContent = `Saved: ${seconds}s`;
+}
 function loadLive(){
   const live = document.getElementById('live');
+  const loader = document.getElementById('liveLoader');
   const spin = document.getElementById('liveSpin');
   live.style.display='none'; spin.style.display='block';
-  live.onload = ()=>{ spin.style.display='none'; live.style.display='block'; };
-  live.onerror = ()=>{ spin.style.display='block'; live.style.display='none'; setTimeout(loadLive, 1000); };
+  loader.style.display='grid';
+  live.onload = ()=>{ spin.style.display='none'; live.style.display='block'; loader.style.display='none'; };
+  live.onerror = ()=>{ spin.style.display='block'; live.style.display='none'; loader.style.display='grid'; setTimeout(loadLive, 1000); };
   live.src = '/stream?t=' + Date.now();
 }
 function fmtTemp(v){ return (v===null || v===undefined) ? '\\u2014' : (Math.round(v)+'\\u00b0C'); }
@@ -550,7 +585,7 @@ async function refreshGrid(){
 setInterval(refreshStats, 2000);
 setInterval(refreshRT, 2000);
 setInterval(()=>{ if(!document.getElementById('panelMulti').classList.contains('hidden')) refreshGrid(); }, 2000);
-(async ()=>{ showTab('live'); await applyLang(); await loadCams(); loadLive(); refreshStats(); refreshRT(); refreshGrid(); })();
+(async ()=>{ showTab('live'); await applyLang(); await loadRepeatDuration(); await loadCams(); loadLive(); refreshStats(); refreshRT(); refreshGrid(); })();
 </script>
 </body>
 </html>
@@ -646,6 +681,36 @@ def api_cameras():
 @app.get("/api/setup/status")
 def api_setup_status():
   return JSONResponse({"configured": _is_configured(), "cameras": cameras_all()})
+
+
+@app.get("/api/settings/repeat_duration")
+def api_get_repeat_duration():
+  cfg = S.cfg
+  if cfg is None:
+    return JSONResponse({"ok": False, "error": "Config not loaded"}, status_code=503)
+  return JSONResponse({"ok": True, "seconds": float(cfg.default_cooldown_sec)})
+
+
+@app.post("/api/settings/repeat_duration")
+def api_set_repeat_duration(seconds: float = 8.0):
+  sec = max(1.0, min(float(seconds), 3600.0))
+
+  if S.cfg is not None:
+    S.cfg.default_cooldown_sec = sec
+
+  try:
+    raw: dict = {}
+    if CONFIG_PATH.exists():
+      with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+        raw = yaml.safe_load(f) or {}
+    raw["default_cooldown_sec"] = sec
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+      yaml.safe_dump(raw, f, sort_keys=False, allow_unicode=False)
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": f"Failed to persist config: {exc}"}, status_code=500)
+
+  audit("system", "settings_repeat_duration", str(sec))
+  return JSONResponse({"ok": True, "seconds": sec})
 
 
 @app.get("/api/setup/webcams")
