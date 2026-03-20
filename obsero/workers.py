@@ -202,7 +202,10 @@ def camera_proc(camera_id: int, source, out_q: mp.Queue,
                 cap_local = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
                 if not cap_local.isOpened():
                     cap_local.release()
-                    cap_local = cv2.VideoCapture(idx, cv2.CAP_ANY)
+                    cap_local = cv2.VideoCapture(idx, cv2.CAP_MSMF)
+                    if not cap_local.isOpened():
+                        cap_local.release()
+                        cap_local = cv2.VideoCapture(idx, cv2.CAP_ANY)
             else:
                 cap_local = cv2.VideoCapture(idx, cv2.CAP_ANY)
             return cap_local

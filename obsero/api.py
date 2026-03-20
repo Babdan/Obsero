@@ -16,14 +16,22 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
+# Allow running this file directly for debugging by ensuring repo root is on sys.path.
+if __name__ == "__main__" and __package__ in (None, ""):
+  _ROOT = Path(__file__).resolve().parent.parent
+  if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
 import cv2
 import numpy as np
 import psutil
 
 from fastapi import FastAPI, Response, UploadFile, File, Form
 from fastapi.responses import (HTMLResponse, StreamingResponse,
-                                JSONResponse, PlainTextResponse, FileResponse)
+                                JSONResponse, PlainTextResponse, FileResponse,
+                                RedirectResponse)
 from fastapi.staticfiles import StaticFiles
+from obsero.config import CameraCfg, CAMERAS_JSON_PATH
 
 # ── paths ──
 ROOT = Path(__file__).resolve().parent.parent
@@ -147,6 +155,26 @@ def get_health_snapshot():
     )
 
 
+def _is_configured() -> bool:
+    try:
+        con = db_conn()
+        total = int(con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0])
+        con.close()
+        return total > 0
+    except Exception:
+        return False
+
+
+def _write_empty_camera_config():
+    data = {
+        "discovered_at": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "nvr": None,
+        "cameras": [],
+    }
+    CAMERAS_JSON_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CAMERAS_JSON_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI application
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -159,7 +187,7 @@ FALLBACK_FAVICON_SVG = b"""<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 
 </svg>"""
 
 
-@app.get("./static/favicon.ico")
+@app.get("/favicon.ico")
 def favicon():
     ico = STATIC_DIR / "favicon.ico"
     if ico.exists():
@@ -174,17 +202,20 @@ I18N = {
            "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU Util","vram":"VRAM","gpu_temp":"GPU Temp","cpu_temp":"CPU Temp",
            "realtime_alerts":"Real-time Alerts","grid_title":"Multi-view (snapshots, refresh every 2s)",
            "current_cam":"Active camera","view":"view","time":"Time","event":"Event","level":"Level","image":"Image",
-           "lang":"Language","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Default Camera"},
+      "lang":"Language","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Default Camera",
+      "tab_settings":"Settings"},
     "zh": {"title":"Obsero 安全面板","tab_live":"实时画面","tab_multi":"多路画面","switch":"切换到该摄像头",
            "overall":"总体状态","sites":"场站","hosts":"分析主机","devices":"设备","online":"在线","offline":"离线",
            "cpu":"CPU","ram":"内存","gpu":"显卡","gpu_util":"显卡占用","vram":"显存","gpu_temp":"显卡温度","cpu_temp":"CPU温度",
            "realtime_alerts":"实时告警","grid_title":"分屏（快照，2秒刷新）","current_cam":"当前摄像头","view":"查看",
-           "time":"时间","event":"事件","level":"级别","image":"图像","lang":"语言","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"默认相机"},
+      "time":"时间","event":"事件","level":"级别","image":"图像","lang":"语言","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"默认相机",
+      "tab_settings":"设置"},
     "tr": {"title":"Obsero Güvenlik Paneli","tab_live":"Canlı Görüntü","tab_multi":"Çoklu Kamera","switch":"Kameraya Geç",
            "overall":"Genel Durum","sites":"Saha","hosts":"Analiz Sunucuları","devices":"Cihazlar","online":"çevrimiçi","offline":"çevrimdışı",
            "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU Kullanımı","vram":"VRAM","gpu_temp":"GPU Sıcaklığı","cpu_temp":"CPU Sıcaklığı",
            "realtime_alerts":"Anlık Alarmlar","grid_title":"Çoklu Görünüm (anlık görüntü, 2 sn)","current_cam":"Aktif kamera","view":"gör",
-           "time":"Zaman","event":"Olay","level":"Seviye","image":"Görüntü","lang":"Dil","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Varsayılan Kamera"},
+      "time":"Zaman","event":"Olay","level":"Seviye","image":"Görüntü","lang":"Dil","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Varsayılan Kamera",
+      "tab_settings":"Ayarlar"},
 }
 
 
@@ -194,6 +225,100 @@ def api_i18n(lang: str = "en"):
 
 
 # ---------- Home HTML ---------------------------------------------------------
+SETUP_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset=\"utf-8\"/>
+  <title>Obsero Setup</title>
+  <link rel=\"icon\" href=\"./static/favicon.ico\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>
+  <style>
+    :root{ --bg:#0b0f14; --bg-2:#101820; --card:#111821; --line:#1f2b37; --text:#e9eef5; --muted:#9fb3c8; --accent:#ff7a1a; --accent-2:#ff9b4e; --accent-3:#ff6a00; }
+    *{box-sizing:border-box}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:0;background:radial-gradient(1200px 800px at 10% 0%,#132335 0%,#0b0f14 55%),var(--bg);color:var(--text)}
+    header{padding:14px 18px;background:linear-gradient(90deg,var(--bg-2),#0e1218 60%,var(--bg-2)); border-bottom:1px solid var(--line); display:flex; align-items:center; gap:12px}
+    .logo{display:inline-flex;align-items:center;gap:8px}
+    .logo i{display:inline-block;width:18px;height:18px;background:var(--accent);clip-path:polygon(45% 0,20% 45%,45% 45%,35% 100%,85% 35%,55% 35%);}
+    .brand{font-weight:800;letter-spacing:.3px}
+    main{max-width:760px;margin:26px auto;padding:0 16px}
+    .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;box-shadow:0 0 0 1px rgba(255,122,26,0.05),0 14px 34px rgba(0,0,0,.28)}
+    h2{margin:0 0 8px}
+    .small{color:var(--muted)}
+    .row{display:flex;gap:8px;align-items:center;margin:10px 0}
+    select{background:#0f1620;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:8px 10px;min-width:260px}
+    button{background:linear-gradient(180deg,var(--accent),var(--accent-3)); border:1px solid #5a2c00;color:#1a0f08;border-radius:8px;padding:9px 13px;cursor:pointer;font-weight:700}
+    button.ghost{background:#0f1620;border-color:#203041;color:#e9eef5}
+    .ok{color:#92f6b7}
+    .bad{color:#ffb8b8}
+  </style>
+</head>
+<body>
+<header><div class=\"logo\"><i></i><span class=\"brand\">Obsero Setup Wizard</span></div></header>
+<main>
+  <div class=\"card\">
+    <h2>Camera Onboarding (Webcam First)</h2>
+    <div class=\"small\">Use this once before entering the safety panel. RTSP/NVR onboarding can be added later.</div>
+    <div class=\"row\">
+      <button class=\"ghost\" onclick=\"scan()\">Scan Webcams</button>
+      <select id=\"cams\"></select>
+      <button onclick=\"applySetup()\">Apply And Start Panel</button>
+    </div>
+    <div id=\"msg\" class=\"small\"></div>
+  </div>
+</main>
+<script>
+async function scan(){
+  const msg = document.getElementById('msg');
+  msg.textContent = 'Scanning local webcams...';
+  const r = await fetch('/api/setup/webcams');
+  const d = await r.json();
+  const sel = document.getElementById('cams');
+  sel.innerHTML = '';
+  if(!d.ok || !d.cameras || d.cameras.length===0){
+    msg.className = 'small bad';
+    msg.textContent = 'No webcam detected. Close apps using the camera and try again.';
+    return;
+  }
+  for(const c of d.cameras){
+    const o = document.createElement('option');
+    o.value = c.url;
+    o.textContent = `${c.name} (index ${c.url})`;
+    sel.appendChild(o);
+  }
+  msg.className = 'small ok';
+  msg.textContent = `Found ${d.cameras.length} webcam(s). Select one and apply.`;
+}
+
+async function applySetup(){
+  const sel = document.getElementById('cams');
+  const msg = document.getElementById('msg');
+  if(!sel.value){
+    msg.className = 'small bad';
+    msg.textContent = 'Select a webcam first.';
+    return;
+  }
+  msg.className = 'small';
+  msg.textContent = 'Applying configuration...';
+  const idx = encodeURIComponent(sel.value);
+  const r = await fetch('/api/setup/apply?webcam_index='+idx, {method:'POST'});
+  const d = await r.json();
+  if(!r.ok || !d.ok){
+    msg.className = 'small bad';
+    msg.textContent = 'Setup failed: ' + (d.error || 'unknown error');
+    return;
+  }
+  msg.className = 'small ok';
+  msg.textContent = 'Setup complete. Opening panel...';
+  setTimeout(()=>{ window.location.href='/'; }, 450);
+}
+
+document.getElementById('msg').textContent = 'Click Scan Webcams to detect local devices.';
+</script>
+</body>
+</html>
+"""
+
 HOME_HTML = """
 <!doctype html>
 <html>
@@ -255,6 +380,7 @@ HOME_HTML = """
   <div class="tabs">
     <button id="tabLive" class="tab" onclick="showTab('live')">Live View</button>
     <button id="tabMulti" class="tab ghost" onclick="showTab('multi')">Multi-cam</button>
+    <button id="tabSettings" class="tab ghost" onclick="showTab('settings')">Settings</button>
   </div>
   <section id="panelLive">
     <div class="grid2">
@@ -287,6 +413,15 @@ HOME_HTML = """
       <div class="grid" id="grid"></div>
     </div>
   </section>
+  <section id="panelSettings" class="hidden">
+    <div class="card">
+      <h2 id="t-settings">Settings</h2>
+      <div class="small">Factory reset removes current camera configuration and takes you back to setup.</div>
+      <div class="row" style="margin-top:10px">
+        <button onclick="factoryReset()">Factory Reset</button>
+      </div>
+    </div>
+  </section>
 </main>
 <div class="overlay" id="overlay"><div class="spinner"></div></div>
 <script>
@@ -296,20 +431,30 @@ document.getElementById('langSel').value = LANG;
 function showTab(which){
   const live = document.getElementById('panelLive');
   const multi = document.getElementById('panelMulti');
+  const settings = document.getElementById('panelSettings');
   const t1 = document.getElementById('tabLive');
   const t2 = document.getElementById('tabMulti');
-  if(which==='live'){ live.classList.remove('hidden'); multi.classList.add('hidden'); t1.classList.remove('ghost'); t2.classList.add('ghost'); }
-  else{ multi.classList.remove('hidden'); live.classList.add('hidden'); t2.classList.remove('ghost'); t1.classList.add('ghost'); }
+  const t3 = document.getElementById('tabSettings');
+  live.classList.add('hidden');
+  multi.classList.add('hidden');
+  settings.classList.add('hidden');
+  t1.classList.add('ghost');
+  t2.classList.add('ghost');
+  t3.classList.add('ghost');
+  if(which==='live'){ live.classList.remove('hidden'); t1.classList.remove('ghost'); }
+  else if(which==='multi'){ multi.classList.remove('hidden'); t2.classList.remove('ghost'); }
+  else { settings.classList.remove('hidden'); t3.classList.remove('ghost'); }
 }
 function setLang(l){ localStorage.setItem('lang', l); LANG = l; applyLang(); }
 async function applyLang(){
   const r = await fetch('/api/i18n?lang='+LANG); const t = await r.json();
   const map = {'t-title':'title','t-title-2':'title','t-live':'tab_live','t-grid':'grid_title','t-lang':'lang',
-    't-overall':'overall','t-rt':'realtime_alerts','t-switch':'switch',
+    't-overall':'overall','t-rt':'realtime_alerts','t-switch':'switch','t-settings':'tab_settings',
     'th-time':'time','th-event':'event','th-level':'level','th-image':'image'};
   for (const id in map){ const el=document.getElementById(id); if(el) el.textContent = t[map[id]]; }
   document.getElementById('tabLive').textContent = t.tab_live;
   document.getElementById('tabMulti').textContent = t.tab_multi;
+  document.getElementById('tabSettings').textContent = t.tab_settings || 'Settings';
   document.title = t.title;
   window._i18n = t;
 }
@@ -330,6 +475,16 @@ async function switchCam(){
   const id = document.getElementById('camSelect').value;
   await fetch('/api/select_camera?camera_id='+id, {method:'POST'});
   setTimeout(()=>{ loadLive(); showOverlay(false); }, 600);
+}
+async function factoryReset(){
+  if(!confirm('Factory reset camera setup and return to setup wizard?')) return;
+  showOverlay(true);
+  try{
+    await fetch('/api/setup/factory_reset', {method:'POST'});
+    window.location.href = '/setup';
+  } finally {
+    showOverlay(false);
+  }
 }
 function loadLive(){
   const live = document.getElementById('live');
@@ -404,7 +559,14 @@ setInterval(()=>{ if(!document.getElementById('panelMulti').classList.contains('
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    if not _is_configured():
+        return RedirectResponse(url="/setup", status_code=307)
     return HOME_HTML
+
+
+@app.get("/setup", response_class=HTMLResponse)
+def setup_page():
+    return SETUP_HTML
 
 
 # ---- MJPEG streaming --------------------------------------------------------
@@ -479,6 +641,116 @@ def api_status():
 @app.get("/api/cameras")
 def api_cameras():
     return JSONResponse(cameras_all())
+
+
+@app.get("/api/setup/status")
+def api_setup_status():
+  return JSONResponse({"configured": _is_configured(), "cameras": cameras_all()})
+
+
+@app.get("/api/setup/webcams")
+def api_setup_webcams(max_index: int = 6):
+  try:
+    from discover_cameras import discover_webcams
+    max_index = max(1, min(max_index, 16))
+    cams = discover_webcams(max_index)
+    return JSONResponse({"ok": True, "cameras": cams})
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc), "cameras": []}, status_code=500)
+
+
+@app.post("/api/setup/apply")
+def api_setup_apply(webcam_index: int = 0):
+  try:
+    from discover_cameras import build_cameras_json, save_cameras_json
+
+    selected = {
+      "name": f"Webcam-{webcam_index}",
+      "url": int(webcam_index),
+      "gpu_id": 0,
+      "max_fps": 12,
+      "target_side": 640,
+      "source_type": "webcam",
+      "online": True,
+    }
+
+    selected["name"] = selected.get("name") or f"Webcam-{webcam_index}"
+    selected["gpu_id"] = int(selected.get("gpu_id", 0))
+    selected["max_fps"] = int(selected.get("max_fps", 12))
+    selected["target_side"] = int(selected.get("target_side", 640))
+    selected["source_type"] = "webcam"
+    selected["online"] = True
+
+    data = build_cameras_json([selected], nvr_settings=None)
+    save_cameras_json(data)
+
+    cfg_cam = CameraCfg(
+      id=1,
+      name=str(selected["name"]),
+      url=str(selected["url"]),
+      gpu_id=selected["gpu_id"],
+      max_fps=selected["max_fps"],
+      target_side=selected["target_side"],
+    )
+    if S.cfg is not None:
+      S.cfg.cameras = [cfg_cam]
+
+    camera_upsert(cfg_cam.name, cfg_cam.url, code="CFG-1", ptz_protocol="onvif", cid=None, online=False)
+    con = db_conn()
+    try:
+      con.execute("DELETE FROM cameras WHERE code IS NULL OR code <> 'CFG-1'")
+      con.commit()
+      row = con.execute("SELECT id FROM cameras WHERE code='CFG-1' LIMIT 1").fetchone()
+    finally:
+      con.close()
+
+    if not row:
+      return JSONResponse({"ok": False, "error": "Failed to persist configured camera"}, status_code=500)
+
+    db_id = int(row[0])
+    if S.cam_mgr is not None:
+      S.cam_mgr.restart_with({db_id: (cfg_cam.url, cfg_cam.max_fps, cfg_cam.target_side)}, db_id)
+
+    with S.raw_snaps_lock:
+      S.raw_snaps.clear()
+    with S.annotated_snaps_lock:
+      S.annotated_snaps.clear()
+
+    audit("system", "setup_apply_webcam", str(cfg_cam.url))
+    return JSONResponse({"ok": True, "camera": {"id": db_id, "name": cfg_cam.name, "url": cfg_cam.url}})
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
+
+
+@app.post("/api/setup/factory_reset")
+def api_setup_factory_reset():
+  try:
+    _write_empty_camera_config()
+    con = db_conn()
+    try:
+      con.execute("DELETE FROM cameras")
+      con.execute("DELETE FROM sqlite_sequence WHERE name='cameras'")
+      con.commit()
+    finally:
+      con.close()
+
+    if S.cam_mgr is not None:
+      S.cam_mgr.stop_all()
+      S.cam_mgr.active_camera_id = None
+    if S.cfg is not None:
+      S.cfg.cameras = []
+
+    with S.raw_snaps_lock:
+      S.raw_snaps.clear()
+    with S.annotated_snaps_lock:
+      S.annotated_snaps.clear()
+    with S.annotated_jpeg_lock:
+      S.annotated_jpeg["jpeg"] = None
+
+    audit("system", "factory_reset", "camera_setup")
+    return JSONResponse({"ok": True})
+  except Exception as exc:
+    return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
 
 
 @app.post("/api/cameras")
@@ -606,3 +878,9 @@ def api_logs(limit: int = 200):
 @app.get("/api/ping")
 def api_ping():
     return PlainTextResponse("pong")
+
+
+if __name__ == "__main__":
+  raise SystemExit(
+    "Do not run obsero/api.py directly. Start the app with: python run.py"
+  )

@@ -50,7 +50,8 @@ DEFAULT_RTSP_PORT = 554
 DEFAULT_SUBNETS = ["192.168.1"]
 
 # How many webcam indices to try when no NVR is found
-MAX_WEBCAM_INDEX = 10
+# Keep this conservative to avoid repeatedly opening virtual camera backends.
+MAX_WEBCAM_INDEX = 6
 
 # Camera defaults written to JSON
 DEFAULT_GPU_ID = 0
@@ -176,10 +177,30 @@ def discover_webcams(max_index: int = MAX_WEBCAM_INDEX) -> list[dict]:
     """
     print(f"[discover] probing local webcams 0..{max_index - 1} …")
     cameras: list[dict] = []
+
+    def _open_index_with_fallback(idx: int):
+        if sys.platform != "win32":
+            return cv2.VideoCapture(idx, cv2.CAP_ANY)
+
+        # Prefer DirectShow, then Media Foundation, then generic fallback.
+        for be in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+            cap_try = cv2.VideoCapture(idx, be)
+            if cap_try.isOpened():
+                return cap_try
+            cap_try.release()
+        return cv2.VideoCapture(idx, cv2.CAP_ANY)
+
     for idx in range(max_index):
-        cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW if sys.platform == "win32" else cv2.CAP_ANY)
+        cap = _open_index_with_fallback(idx)
         if cap.isOpened():
-            ret, frame = cap.read()
+            ret, frame = False, None
+            # Warm up a few frames because some drivers return an empty first frame.
+            for _ in range(6):
+                r, f = cap.read()
+                if r and f is not None:
+                    ret, frame = True, f
+                    break
+                time.sleep(0.03)
             cap.release()
             if ret and frame is not None:
                 name = f"Webcam-{idx}"
