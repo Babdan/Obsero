@@ -1,0 +1,25 @@
+# Obsero Safety Panel - Requirements
+# Core ML & Computer Vision
+torch>=2.0.0
+torchvision>=0.15.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# YOLOv8 & Detection
+ultralytics>=8.0.0
+supervision>=0.18.0
+
+# Web Framework & API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# System Monitoring
+psutil>=5.9.0
+pynvml>=11.500.0
+
+# Configuration
+pyyaml>=6.0
+
+# Optional: For better performance
+tensorrt>=8.6.0

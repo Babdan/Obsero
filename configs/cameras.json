@@ -1,0 +1,16 @@
+{
+  "discovered_at": "2026-03-19T20:58:27",
+  "nvr": null,
+  "cameras": [
+    {
+      "id": 1,
+      "name": "Webcam-0",
+      "url": 0,
+      "gpu_id": 0,
+      "max_fps": 12,
+      "target_side": 640,
+      "source_type": "webcam",
+      "online": true
+    }
+  ]
+}

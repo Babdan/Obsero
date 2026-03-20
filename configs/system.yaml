@@ -1,0 +1,104 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# Obsero Enterprise Safety Panel — System Configuration
+# ═══════════════════════════════════════════════════════════════════════════════
+# Edit this file to match your factory deployment.
+
+# --- Server ---
+server:
+  host: "0.0.0.0"
+  port: 9009
+  open_browser: true
+
+# --- GPUs ---
+# List every GPU that should run inference workers.
+# weight: relative capacity hint (1.0 = full speed; 0.7 = 70 %).
+gpus:
+  - id: 0
+    weight: 1.0
+  # - id: 1
+  #   weight: 0.7
+
+# --- Cameras ---
+# Cameras are now auto-discovered by  discover_cameras.py  and stored in
+# configs/cameras.json.  If cameras.json exists it OVERRIDES this section.
+#
+# To re-discover cameras run:
+#     python discover_cameras.py
+#     python discover_cameras.py --nvr-ip 192.168.1.108 --nvr-user admin --nvr-pass "Petra123!"
+#     python discover_cameras.py --force-webcam   # debug with local webcam
+#
+# You can still hardcode cameras here as a fallback (used only when
+# cameras.json is missing):
+cameras: []
+  # Example:
+  # - id: 1
+  #   name: "CH1"
+  #   url: "rtsp://admin:pass@192.168.1.108:554/cam/realmonitor?channel=1&subtype=0&unicast=true"
+  #   gpu_id: 0
+  #   max_fps: 12
+  #   target_side: 640
+
+# --- Models ---
+models:
+  - key: ppe
+    stem: helmet_vest_best
+    conf_thr: 0.60
+    keywords: ["nohat", "novest", "NO-Hardhat", "NO-Vest"]
+    cadence_every_n: 1
+  - key: smoke
+    stem: smoke_best
+    conf_thr: 0.60
+    keywords: ["cigarette", "smoke"]
+    cadence_every_n: 2
+  - key: phone
+    stem: phone_best
+    conf_thr: 0.50
+    keywords: ["phone", "mobile", "smartphone"]
+    cadence_every_n: 2
+  - key: fire_smoke
+    stem: fire_smoke_best
+    conf_thr: 0.75
+    keywords: ["fire", "smoke"]
+    cadence_every_n: 3
+  - key: fall
+    stem: fall_best
+    conf_thr: 0.85
+    keywords: ["fall", "fallen", "falldown", "man_down"]
+    cadence_every_n: 2
+
+# --- Temporal Rules (per event type) ---
+# These gate incident creation so only real events pass through.
+rules:
+  ppe:
+    min_consecutive_frames: 3
+    window_sec: 5.0
+    min_ratio: 0.6
+    cooldown_sec: 10.0
+  smoke:
+    min_consecutive_frames: 3
+    window_sec: 5.0
+    min_ratio: 0.5
+    cooldown_sec: 8.0
+  phone:
+    min_consecutive_frames: 4
+    window_sec: 6.0
+    min_ratio: 0.5
+    cooldown_sec: 8.0
+  fire_smoke:
+    min_consecutive_frames: 2
+    window_sec: 4.0
+    min_ratio: 0.4
+    cooldown_sec: 15.0
+  fall:
+    min_consecutive_frames: 2
+    window_sec: 3.0
+    min_ratio: 0.5
+    cooldown_sec: 12.0
+
+# --- Camera offline detection ---
+camera_offline_timeout_sec: 15.0
+
+# --- Default cooldown (legacy, used alongside rules) ---
+default_cooldown_sec: 5.0
+per_tag_cooldown:
+  FIRE_SMOKE: 8.0
