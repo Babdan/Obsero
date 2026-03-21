@@ -12,7 +12,7 @@ Key changes from baseline:
 
 from __future__ import annotations
 
-import datetime, json, os, queue, sys, threading, time, traceback
+import datetime, json, os, queue, signal, sys, threading, time, traceback
 from collections import deque
 from pathlib import Path
 from typing import Callable
@@ -60,6 +60,12 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
     import torch
     from ultralytics import YOLO
     from obsero.models import resolve_weight_path_for_gpu
+
+    # Prevent Ctrl+C from hard-aborting child processes on Windows.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception:
+        pass
 
     tag = proc_name.upper()
     model_key = proc_name.lower()
@@ -179,6 +185,12 @@ class FanOut:
 def camera_proc(camera_id: int, source, out_q: mp.Queue,
                 max_fps=12, target_side=640):
     """One process per camera. Sends (camera_id, jpeg_bytes) to out_q."""
+
+    # Main process handles Ctrl+C and then terminates camera processes cleanly.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception:
+        pass
 
     os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
                           "rtsp_transport;tcp|stimeout;5000000")

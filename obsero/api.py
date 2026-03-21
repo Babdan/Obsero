@@ -11,7 +11,7 @@ New routes:
 
 from __future__ import annotations
 
-import datetime, json, queue, signal, threading, time, traceback, sys, os, warnings
+import csv, datetime, json, queue, signal, threading, time, traceback, sys, os, warnings
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -38,8 +38,10 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 INCIDENTS_DIR = ROOT / "incidents"
 STATIC_DIR = ROOT / "static"
+REPORTS_DIR = ROOT / "data" / "reports"
 INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
+REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ── GPU monitoring ──
 try:
@@ -176,12 +178,126 @@ def _write_empty_camera_config():
     CAMERAS_JSON_PATH.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
+def _parse_db_ts(ts: str | None) -> datetime.datetime | None:
+    if not ts:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            return datetime.datetime.strptime(ts, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _bbox_from_json(raw: str | None) -> list[float] | None:
+    if not raw:
+        return None
+    try:
+        b = json.loads(raw)
+        if isinstance(b, list) and len(b) == 4:
+            return [float(x) for x in b]
+    except Exception:
+        return None
+    return None
+
+
+def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
+    if not a or not b:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    iw = max(0.0, ix2 - ix1)
+    ih = max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    a_area = max(0.0, (ax2 - ax1)) * max(0.0, (ay2 - ay1))
+    b_area = max(0.0, (bx2 - bx1)) * max(0.0, (by2 - by1))
+    union = a_area + b_area - inter
+    return (inter / union) if union > 0 else 0.0
+
+
+SLA_MINUTES_BY_LEVEL = {
+    "high": 5,
+    "medium": 15,
+    "low": 30,
+}
+
+
+def _sla_worker_loop():
+    while not S.stop_event.is_set():
+        try:
+            con = db_conn()
+            rows = con.execute(
+                """
+                SELECT id, ts, level, status, assignee, due_at
+                  FROM alerts
+                 WHERE status <> 'closed'
+                """
+            ).fetchall()
+            con.close()
+
+            now = datetime.datetime.now()
+            for r in rows:
+                aid = int(r["id"])
+                ts = _parse_db_ts(r["ts"])
+                level = (r["level"] or "medium").lower()
+                status = (r["status"] or "new").lower()
+                assignee = (r["assignee"] or "").strip().lower()
+                due_at = _parse_db_ts(r["due_at"])
+
+                if due_at is None and ts is not None:
+                    mins = SLA_MINUTES_BY_LEVEL.get(level, 15)
+                    due = ts + datetime.timedelta(minutes=mins)
+                    due_str = due.strftime("%Y-%m-%d %H:%M:%S")
+                    con2 = db_conn()
+                    con2.execute("UPDATE alerts SET due_at=? WHERE id=?", (due_str, aid))
+                    con2.commit()
+                    con2.close()
+                    due_at = due
+
+                if due_at is None or due_at >= now:
+                    continue
+
+                # Escalation policy: unhandled early states -> supervisor; late states -> manager.
+                target = "supervisor" if status in {"new", "triage", "ack"} else "manager"
+                if assignee != target:
+                    try:
+                        incident_assign(aid, assignee=target, actor="sla-worker")
+                    except Exception:
+                        pass
+                if status in {"new", "triage", "ack"}:
+                    try:
+                        incident_transition(aid, "assigned", actor="sla-worker", note="sla_escalation")
+                    except Exception:
+                        pass
+                audit("sla-worker", "incident_escalated", f"{aid}:{target}")
+        except Exception:
+            traceback.print_exc()
+
+        S.stop_event.wait(30.0)
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # FastAPI application
 # ═══════════════════════════════════════════════════════════════════════════════
 app = FastAPI(title="Obsero Safety Panel")
 app.mount("/incidents", StaticFiles(directory=str(INCIDENTS_DIR)), name="incidents")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+@app.on_event("startup")
+def _startup_workers():
+    # Uvicorn can import app multiple times in some modes; guard against duplicate workers.
+    if getattr(S, "_sla_worker_started", False):
+        return
+    t = threading.Thread(target=_sla_worker_loop, daemon=True)
+    t.start()
+    S._sla_worker_started = True
 
 FALLBACK_FAVICON_SVG = b"""<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>
 <rect width='64' height='64' fill='#0b0f14'/><path d='M36 6L14 36h14l-6 22 28-36H36z' fill='#ff7a1a'/>
@@ -204,19 +320,43 @@ I18N = {
            "realtime_alerts":"Real-time Alerts","grid_title":"Multi-view (snapshots, refresh every 2s)",
            "current_cam":"Active camera","view":"view","time":"Time","event":"Event","level":"Level","image":"Image",
       "lang":"Language","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Default Camera",
-      "tab_settings":"Settings"},
+  "tab_settings":"Settings","tab_ops":"Incident Ops",
+  "ops_title":"Incident Ops Queue","ops_status":"Status","ops_overdue":"overdue only",
+  "ops_refresh":"Refresh","ops_group":"Group Duplicates","ops_export_json":"Export JSON","ops_export_csv":"Export CSV",
+  "ops_assign":"Assign","ops_update":"Update","ops_close":"Close","ops_merge":"Merge","ops_open":"Open",
+  "ops_camera":"Camera","ops_assignee":"Assignee","ops_due":"Due","ops_actions":"Actions",
+  "ops_kpi_backlog":"Backlog","ops_kpi_mtta":"MTTA","ops_kpi_mttr":"MTTR","ops_kpi_fp":"False+ Rate",
+  "ops_popup_title":"Incident","ops_popup_save":"Save","ops_popup_cancel":"Cancel","ops_popup_timeline":"Timeline",
+  "ops_note":"Note","ops_type":"Type","ops_site":"Site","ops_risk":"Risk","ops_policy":"Policy","ops_root_cause":"Root Cause",
+  "ops_corrective":"Corrective Action","ops_approver":"Approver"},
     "zh": {"title":"Obsero 安全面板","tab_live":"实时画面","tab_multi":"多路画面","switch":"切换到该摄像头",
            "overall":"总体状态","sites":"场站","hosts":"分析主机","devices":"设备","online":"在线","offline":"离线",
            "cpu":"CPU","ram":"内存","gpu":"显卡","gpu_util":"显卡占用","vram":"显存","gpu_temp":"显卡温度","cpu_temp":"CPU温度",
            "realtime_alerts":"实时告警","grid_title":"分屏（快照，2秒刷新）","current_cam":"当前摄像头","view":"查看",
       "time":"时间","event":"事件","level":"级别","image":"图像","lang":"语言","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"默认相机",
-      "tab_settings":"设置"},
+      "tab_settings":"设置","tab_ops":"事件运营",
+      "ops_title":"事件队列","ops_status":"状态","ops_overdue":"仅逾期",
+      "ops_refresh":"刷新","ops_group":"重复合并","ops_export_json":"导出 JSON","ops_export_csv":"导出 CSV",
+      "ops_assign":"分配","ops_update":"更新","ops_close":"关闭","ops_merge":"合并","ops_open":"打开",
+      "ops_camera":"摄像头","ops_assignee":"负责人","ops_due":"截止时间","ops_actions":"操作",
+      "ops_kpi_backlog":"待处理","ops_kpi_mtta":"平均响应","ops_kpi_mttr":"平均关闭","ops_kpi_fp":"误报率",
+      "ops_popup_title":"事件","ops_popup_save":"保存","ops_popup_cancel":"取消","ops_popup_timeline":"时间线",
+      "ops_note":"备注","ops_type":"类型","ops_site":"站点","ops_risk":"风险","ops_policy":"政策","ops_root_cause":"根因",
+      "ops_corrective":"纠正措施","ops_approver":"审批人"},
     "tr": {"title":"Obsero Güvenlik Paneli","tab_live":"Canlı Görüntü","tab_multi":"Çoklu Kamera","switch":"Kameraya Geç",
            "overall":"Genel Durum","sites":"Saha","hosts":"Analiz Sunucuları","devices":"Cihazlar","online":"çevrimiçi","offline":"çevrimdışı",
            "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU Kullanımı","vram":"VRAM","gpu_temp":"GPU Sıcaklığı","cpu_temp":"CPU Sıcaklığı",
            "realtime_alerts":"Anlık Alarmlar","grid_title":"Çoklu Görünüm (anlık görüntü, 2 sn)","current_cam":"Aktif kamera","view":"gör",
       "time":"Zaman","event":"Olay","level":"Seviye","image":"Görüntü","lang":"Dil","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Varsayılan Kamera",
-      "tab_settings":"Ayarlar"},
+      "tab_settings":"Ayarlar","tab_ops":"Olay Operasyon",
+      "ops_title":"Olay Operasyon Kuyrugu","ops_status":"Durum","ops_overdue":"yalnizca geciken",
+      "ops_refresh":"Yenile","ops_group":"Yinelenenleri Birlestir","ops_export_json":"JSON Disa Aktar","ops_export_csv":"CSV Disa Aktar",
+      "ops_assign":"Ata","ops_update":"Guncelle","ops_close":"Kapat","ops_merge":"Birlestir","ops_open":"Ac",
+      "ops_camera":"Kamera","ops_assignee":"Sorumlu","ops_due":"Termin","ops_actions":"Islemler",
+      "ops_kpi_backlog":"Bekleyen","ops_kpi_mtta":"MTTA","ops_kpi_mttr":"MTTR","ops_kpi_fp":"Yanlis+ Orani",
+      "ops_popup_title":"Olay","ops_popup_save":"Kaydet","ops_popup_cancel":"Iptal","ops_popup_timeline":"Zaman Cizgisi",
+      "ops_note":"Not","ops_type":"Tur","ops_site":"Saha","ops_risk":"Risk","ops_policy":"Politika","ops_root_cause":"Kok Neden",
+      "ops_corrective":"Duzeltici Aksiyon","ops_approver":"Onaylayan"},
 }
 
 
@@ -384,6 +524,7 @@ HOME_HTML = """
     <button id="tabLive" class="tab" onclick="showTab('live')">Live View</button>
     <button id="tabMulti" class="tab ghost" onclick="showTab('multi')">Multi-cam</button>
     <button id="tabSettings" class="tab ghost" onclick="showTab('settings')">Settings</button>
+    <button id="tabOps" class="tab ghost" onclick="showTab('ops')">Incident Ops</button>
   </div>
   <section id="panelLive">
     <div class="grid2">
@@ -434,39 +575,135 @@ HOME_HTML = """
       </div>
     </div>
   </section>
+  <section id="panelOps" class="hidden">
+    <div class="card">
+      <h2 id="t-ops">Incident Ops Queue</h2>
+      <div class="row" style="margin-bottom:8px;flex-wrap:wrap">
+        <label class="small" id="ops-status-label" for="opsStatus">Status</label>
+        <select id="opsStatus" style="min-width:160px">
+          <option value="">all</option>
+          <option value="new">new</option>
+          <option value="triage">triage</option>
+          <option value="assigned">assigned</option>
+          <option value="investigating">investigating</option>
+          <option value="awaiting_approval">awaiting_approval</option>
+          <option value="ack">ack</option>
+          <option value="confirmed">confirmed</option>
+          <option value="false_positive">false_positive</option>
+          <option value="ignored">ignored</option>
+          <option value="closed">closed</option>
+        </select>
+        <label class="small"><input id="opsOverdue" type="checkbox"/> <span id="ops-overdue-label">overdue only</span></label>
+        <button class="ghost" id="ops-refresh-btn" onclick="refreshOpsQueue()">Refresh</button>
+        <button class="ghost" id="ops-group-btn" onclick="groupDuplicates()">Group Duplicates</button>
+        <button class="ghost" id="ops-export-json-btn" onclick="generateReport('json')">Export JSON</button>
+        <button class="ghost" id="ops-export-csv-btn" onclick="generateReport('csv')">Export CSV</button>
+      </div>
+      <div id="opsKpi" class="small" style="margin-bottom:8px"></div>
+      <div id="opsMsg" class="small"></div>
+      <table>
+        <thead><tr>
+          <th>ID</th><th id="ops-th-time">Time</th><th id="ops-th-camera">Camera</th><th id="ops-th-event">Event</th><th id="ops-th-level">Level</th><th id="ops-th-status">Status</th><th id="ops-th-assignee">Assignee</th><th id="ops-th-due">Due</th><th id="ops-th-image">Image</th><th id="ops-th-actions">Actions</th>
+        </tr></thead>
+        <tbody id="opsBody"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 <div class="overlay" id="overlay"><div class="spinner"></div></div>
+<div class="overlay" id="opsOverlay">
+  <div class="card" style="width:min(1040px,95vw);max-height:90vh;overflow:auto">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 id="ops-modal-title" style="margin:0">Incident</h3>
+      <button class="ghost" id="ops-cancel-top" onclick="closeOpsModal()">Close</button>
+    </div>
+    <div class="grid2" style="grid-template-columns:1.2fr 1fr;gap:12px">
+      <div>
+        <div class="small" id="ops-img-label">Image</div>
+        <a id="opsImageLink" href="#" target="_blank"><img id="opsImage" class="snap" src="" style="max-height:52vh;object-fit:contain;background:#05080d"/></a>
+      </div>
+      <div>
+        <div class="row"><label class="small" for="opsFStatus" id="ops-f-status-label">Status</label><select id="opsFStatus" style="min-width:180px">
+          <option value="new">new</option><option value="triage">triage</option><option value="assigned">assigned</option>
+          <option value="investigating">investigating</option><option value="awaiting_approval">awaiting_approval</option>
+          <option value="ack">ack</option><option value="confirmed">confirmed</option><option value="false_positive">false_positive</option>
+          <option value="ignored">ignored</option><option value="closed">closed</option>
+        </select></div>
+        <div class="row"><label class="small" for="opsFLevel" id="ops-f-level-label">Level</label><select id="opsFLevel" style="min-width:180px"><option>low</option><option>medium</option><option>high</option></select></div>
+        <div class="row"><label class="small" for="opsFAssignee" id="ops-f-assignee-label">Assignee</label><input id="opsFAssignee" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFType" id="ops-f-type-label">Type</label><input id="opsFType" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFSite" id="ops-f-site-label">Site</label><input id="opsFSite" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFRisk" id="ops-f-risk-label">Risk</label><input id="opsFRisk" type="number" min="0" max="100" style="width:120px;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFPolicy" id="ops-f-policy-label">Policy</label><input id="opsFPolicy" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFRootCause" id="ops-f-root-label">Root Cause</label><input id="opsFRootCause" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFCorrective" id="ops-f-corrective-label">Corrective Action</label><input id="opsFCorrective" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFApprover" id="ops-f-approver-label">Approver</label><input id="opsFApprover" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row"><label class="small" for="opsFNote" id="ops-f-note-label">Note</label><input id="opsFNote" type="text" style="flex:1;background:#0f1620;border:1px solid #203041;color:#e9eef5;border-radius:8px;padding:7px"/></div>
+        <div class="row" style="margin-top:10px">
+          <button id="ops-save-btn" onclick="saveOpsModal()">Save</button>
+          <button class="ghost" id="ops-cancel-btn" onclick="closeOpsModal()">Cancel</button>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-top:12px;padding:8px">
+      <div class="small" id="ops-timeline-label">Timeline</div>
+      <div id="opsTimeline" class="small" style="max-height:160px;overflow:auto;white-space:pre-wrap"></div>
+    </div>
+  </div>
+</div>
 <script>
 let LANG = localStorage.getItem('lang') || 'en';
+let OPS_ACTIVE_ID = null;
+let ACTIVE_CAM_ID = null;
+let LIVE_SNAPSHOT_TIMER = null;
 document.getElementById('langSel').value = LANG;
 
 function showTab(which){
   const live = document.getElementById('panelLive');
   const multi = document.getElementById('panelMulti');
   const settings = document.getElementById('panelSettings');
+  const ops = document.getElementById('panelOps');
   const t1 = document.getElementById('tabLive');
   const t2 = document.getElementById('tabMulti');
   const t3 = document.getElementById('tabSettings');
+  const t4 = document.getElementById('tabOps');
   live.classList.add('hidden');
   multi.classList.add('hidden');
   settings.classList.add('hidden');
+  ops.classList.add('hidden');
   t1.classList.add('ghost');
   t2.classList.add('ghost');
   t3.classList.add('ghost');
+  t4.classList.add('ghost');
   if(which==='live'){ live.classList.remove('hidden'); t1.classList.remove('ghost'); }
   else if(which==='multi'){ multi.classList.remove('hidden'); t2.classList.remove('ghost'); }
-  else { settings.classList.remove('hidden'); t3.classList.remove('ghost'); }
+  else if(which==='settings'){ settings.classList.remove('hidden'); t3.classList.remove('ghost'); }
+  else { ops.classList.remove('hidden'); t4.classList.remove('ghost'); refreshOpsQueue(); }
 }
 function setLang(l){ localStorage.setItem('lang', l); LANG = l; applyLang(); }
 async function applyLang(){
   const r = await fetch('/api/i18n?lang='+LANG); const t = await r.json();
   const map = {'t-title':'title','t-title-2':'title','t-live':'tab_live','t-grid':'grid_title','t-lang':'lang',
-    't-overall':'overall','t-rt':'realtime_alerts','t-switch':'switch','t-settings':'tab_settings',
+    't-overall':'overall','t-rt':'realtime_alerts','t-switch':'switch','t-settings':'tab_settings','t-ops':'tab_ops',
     'th-time':'time','th-event':'event','th-level':'level','th-image':'image'};
   for (const id in map){ const el=document.getElementById(id); if(el) el.textContent = t[map[id]]; }
   document.getElementById('tabLive').textContent = t.tab_live;
   document.getElementById('tabMulti').textContent = t.tab_multi;
   document.getElementById('tabSettings').textContent = t.tab_settings || 'Settings';
+  document.getElementById('tabOps').textContent = t.tab_ops || 'Incident Ops';
+  const xmap = {
+    'ops-status-label':'ops_status','ops-overdue-label':'ops_overdue','ops-refresh-btn':'ops_refresh',
+    'ops-group-btn':'ops_group','ops-export-json-btn':'ops_export_json','ops-export-csv-btn':'ops_export_csv',
+    'ops-th-time':'time','ops-th-camera':'ops_camera','ops-th-event':'event','ops-th-level':'level',
+    'ops-th-status':'ops_status','ops-th-assignee':'ops_assignee','ops-th-due':'ops_due','ops-th-image':'image',
+    'ops-th-actions':'ops_actions','ops-modal-title':'ops_popup_title','ops-save-btn':'ops_popup_save',
+    'ops-cancel-btn':'ops_popup_cancel','ops-cancel-top':'ops_popup_cancel','ops-timeline-label':'ops_popup_timeline',
+    'ops-f-status-label':'ops_status','ops-f-level-label':'level','ops-f-assignee-label':'ops_assignee',
+    'ops-f-type-label':'ops_type','ops-f-site-label':'ops_site','ops-f-risk-label':'ops_risk',
+    'ops-f-policy-label':'ops_policy','ops-f-root-label':'ops_root_cause','ops-f-corrective-label':'ops_corrective',
+    'ops-f-approver-label':'ops_approver','ops-f-note-label':'ops_note','ops-img-label':'image'
+  };
+  for (const id in xmap){ const el=document.getElementById(id); if(el) el.textContent = t[xmap[id]] || el.textContent; }
   document.title = t.title;
   window._i18n = t;
 }
@@ -519,14 +756,227 @@ async function saveRepeatDuration(){
   }
   msg.textContent = `Saved: ${seconds}s`;
 }
+async function opsPost(url, data){
+  const body = new URLSearchParams();
+  for (const k in data){
+    if(data[k] !== undefined && data[k] !== null){
+      body.append(k, String(data[k]));
+    }
+  }
+  return fetch(url, {method:'POST', body});
+}
+function opsSetMsg(msg, bad=false){
+  const el = document.getElementById('opsMsg');
+  el.textContent = msg;
+  el.style.color = bad ? '#ffb8b8' : '#9fb3c8';
+}
+async function opsAssign(id){
+  const assignee = prompt('Assign incident to (username/role):', 'supervisor');
+  if(!assignee){ return; }
+  const dueMin = Number(prompt('Due in minutes (default 5):', '5') || '5');
+  let dueAt = null;
+  if(Number.isFinite(dueMin) && dueMin > 0){
+    dueAt = new Date(Date.now() + dueMin * 60000).toISOString().replace('T',' ').slice(0,19);
+  }
+  const r = await opsPost('/api/incidents/'+id+'/assign', {assignee:assignee, actor:'ui', due_at:dueAt});
+  if(!r.ok){ opsSetMsg('Assign failed for incident '+id, true); return; }
+  opsSetMsg('Assigned incident '+id+' to '+assignee);
+  refreshOpsQueue();
+}
+function closeOpsModal(){
+  document.getElementById('opsOverlay').style.display = 'none';
+  OPS_ACTIVE_ID = null;
+}
+async function openIncidentModal(id){
+  OPS_ACTIVE_ID = id;
+  const r = await fetch('/api/incidents/'+id);
+  if(!r.ok){ opsSetMsg('Failed to load incident '+id, true); return; }
+  const d = await r.json();
+  document.getElementById('ops-modal-title').textContent = (window._i18n?.ops_popup_title || 'Incident') + ' #' + id;
+  document.getElementById('opsFStatus').value = d.status || 'new';
+  document.getElementById('opsFLevel').value = d.level || 'medium';
+  document.getElementById('opsFAssignee').value = d.assignee || '';
+  document.getElementById('opsFType').value = d.type || '';
+  document.getElementById('opsFSite').value = d.site || '';
+  document.getElementById('opsFRisk').value = (d.risk_score ?? '');
+  document.getElementById('opsFPolicy').value = d.policy_clause || '';
+  document.getElementById('opsFRootCause').value = d.root_cause_code || '';
+  document.getElementById('opsFCorrective').value = d.corrective_action_code || '';
+  document.getElementById('opsFApprover').value = d.approver || '';
+  document.getElementById('opsFNote').value = '';
+  const imgPath = d.image ? '/incidents/' + d.image : '';
+  const img = document.getElementById('opsImage');
+  const lnk = document.getElementById('opsImageLink');
+  img.src = imgPath || ('/snapshot?camera_id=' + (d.camera_id || 0) + '&t=' + Date.now());
+  lnk.href = img.src;
+  const tl = Array.isArray(d.timeline) ? d.timeline : [];
+  document.getElementById('opsTimeline').textContent = tl.length
+    ? tl.map(x => `${x.ts} | ${x.actor||'system'} | ${x.from_status||'-'} -> ${x.to_status} ${x.note?('| '+x.note):''}`).join('\\n')
+    : '-';
+  document.getElementById('opsOverlay').style.display = 'flex';
+}
+async function saveOpsModal(){
+  if(!OPS_ACTIVE_ID){ return; }
+  const id = OPS_ACTIVE_ID;
+  const data = {
+    status: document.getElementById('opsFStatus').value,
+    actor: 'ui',
+    reviewer: 'operator',
+    note: document.getElementById('opsFNote').value || '',
+    level: document.getElementById('opsFLevel').value,
+    type: document.getElementById('opsFType').value || '',
+    policy_clause: document.getElementById('opsFPolicy').value || '',
+    root_cause_code: document.getElementById('opsFRootCause').value || '',
+    corrective_action_code: document.getElementById('opsFCorrective').value || '',
+    approver: document.getElementById('opsFApprover').value || '',
+    risk_score: document.getElementById('opsFRisk').value || ''
+  };
+  const r1 = await opsPost('/api/incidents/'+id+'/label', data);
+  if(!r1.ok){ opsSetMsg('Update failed for incident '+id, true); return; }
+
+  const assignee = (document.getElementById('opsFAssignee').value || '').trim();
+  if(assignee){
+    const r2 = await opsPost('/api/incidents/'+id+'/assign', {assignee:assignee, actor:'ui'});
+    if(!r2.ok){ opsSetMsg('Saved details, but assignee update failed.', true); }
+  }
+
+  closeOpsModal();
+  opsSetMsg('Incident '+id+' updated.');
+  refreshOpsQueue();
+}
+async function opsLabel(id){
+  const status = prompt('New status (triage/assigned/investigating/awaiting_approval/confirmed/false_positive/ignored/closed):', 'triage');
+  if(!status){ return; }
+  const r = await opsPost('/api/incidents/'+id+'/label', {status:status, actor:'ui', reviewer:'operator'});
+  if(!r.ok){ opsSetMsg('Status update failed for incident '+id, true); return; }
+  opsSetMsg('Updated incident '+id+' to '+status);
+  refreshOpsQueue();
+}
+async function opsClose(id){
+  const r = await opsPost('/api/incidents/'+id+'/close', {actor:'ui', reviewer:'operator'});
+  if(!r.ok){ opsSetMsg('Close failed for incident '+id, true); return; }
+  opsSetMsg('Closed incident '+id);
+  refreshOpsQueue();
+}
+async function opsMerge(masterId){
+  const childId = Number(prompt('Child incident id to merge into '+masterId+':', ''));
+  if(!Number.isFinite(childId) || childId <= 0){ return; }
+  const r = await opsPost('/api/incidents/'+masterId+'/merge', {child_id:childId, actor:'ui'});
+  if(!r.ok){ opsSetMsg('Merge failed: '+childId+' -> '+masterId, true); return; }
+  opsSetMsg('Merged '+childId+' into '+masterId);
+  refreshOpsQueue();
+}
+async function groupDuplicates(){
+  const r = await fetch('/api/incidents/group_duplicates?window_sec=45&iou_thr=0.35', {method:'POST'});
+  const d = await r.json();
+  if(!r.ok){ opsSetMsg('Grouping failed: '+(d.error||'unknown'), true); return; }
+  opsSetMsg('Duplicate grouping merged '+d.merged+' incident(s).');
+  refreshOpsQueue();
+}
+async function generateReport(fmt){
+  const status = document.getElementById('opsStatus').value || null;
+  const overdue = document.getElementById('opsOverdue').checked;
+  const r = await opsPost('/api/reports/generate', {report_type:'ops_queue', fmt:fmt, status:status, overdue:overdue, limit:500});
+  const d = await r.json();
+  if(!r.ok || !d.ok){ opsSetMsg('Report generation failed', true); return; }
+  const link = '/api/reports/' + encodeURIComponent(d.report);
+  opsSetMsg('Report ready: '+d.report);
+  window.open(link, '_blank');
+}
+async function refreshOpsQueue(){
+  const status = document.getElementById('opsStatus').value || '';
+  const overdue = document.getElementById('opsOverdue').checked ? 'true' : 'false';
+  const q = '/api/incidents/queue?limit=50&include_children=false&overdue='+overdue + (status ? '&status='+encodeURIComponent(status) : '');
+  const r = await fetch(q);
+  const arr = await r.json();
+  const tb = document.getElementById('opsBody');
+  tb.innerHTML = '';
+  for(const it of arr){
+    const tr = document.createElement('tr');
+    const hasImage = !!it.image;
+    const imageCell = hasImage
+      ? `<a class="badge" href="/incidents/${it.image}" target="_blank">${window._i18n?.view || 'view'}</a>`
+      : '-';
+    tr.innerHTML = `<td>${it.id}</td>
+      <td>${String(it.ts||'').split('.')[0]}</td>
+      <td>${it.camera_id||''}</td>
+      <td><span class="pill">${it.type||''}</span> ${it.label||''}</td>
+      <td>${it.level||''}</td>
+      <td>${it.status||''}</td>
+      <td>${it.assignee||''}</td>
+      <td>${it.due_at||''}</td>
+      <td>${imageCell}</td>
+      <td>
+        <button class="ghost" onclick="openIncidentModal(${it.id})">${window._i18n?.ops_open || 'Open'}</button>
+        <button class="ghost" onclick="opsAssign(${it.id})">${window._i18n?.ops_assign || 'Assign'}</button>
+        <button class="ghost" onclick="opsClose(${it.id})">${window._i18n?.ops_close || 'Close'}</button>
+        <button class="ghost" onclick="opsMerge(${it.id})">${window._i18n?.ops_merge || 'Merge'}</button>
+      </td>`;
+    tb.appendChild(tr);
+  }
+  const k = await fetch('/api/kpi/ops').then(x=>x.json());
+  document.getElementById('opsKpi').textContent =
+    `${window._i18n?.ops_kpi_backlog || 'Backlog'}: ${k.backlog ?? 0} | ${window._i18n?.ops_kpi_mtta || 'MTTA'}: ${k.mtta_seconds ?? '-'}s | ${window._i18n?.ops_kpi_mttr || 'MTTR'}: ${k.mttr_seconds ?? '-'}s | ${window._i18n?.ops_kpi_fp || 'False+ Rate'}: ${k.false_positive_rate ?? '-'}`;
+}
 function loadLive(){
   const live = document.getElementById('live');
   const loader = document.getElementById('liveLoader');
   const spin = document.getElementById('liveSpin');
-  live.style.display='none'; spin.style.display='block';
+  live.style.display='none';
+  spin.style.display='block';
   loader.style.display='grid';
-  live.onload = ()=>{ spin.style.display='none'; live.style.display='block'; loader.style.display='none'; };
-  live.onerror = ()=>{ spin.style.display='block'; live.style.display='none'; loader.style.display='grid'; setTimeout(loadLive, 1000); };
+
+  const showFrame = ()=>{
+    spin.style.display='none';
+    live.style.display='block';
+    loader.style.display='none';
+  };
+
+  const stopSnapshotLoop = ()=>{
+    if (LIVE_SNAPSHOT_TIMER){
+      clearInterval(LIVE_SNAPSHOT_TIMER);
+      LIVE_SNAPSHOT_TIMER = null;
+    }
+  };
+
+  const startSnapshotLoop = ()=>{
+    stopSnapshotLoop();
+    const camSel = document.getElementById('camSelect');
+    const getCamId = ()=>{
+      const v = camSel && camSel.value ? Number(camSel.value) : NaN;
+      if (Number.isFinite(v) && v > 0) return v;
+      if (Number.isFinite(ACTIVE_CAM_ID) && ACTIVE_CAM_ID > 0) return ACTIVE_CAM_ID;
+      return 1;
+    };
+    const tick = ()=>{
+      const cid = getCamId();
+      live.src = '/snapshot?camera_id=' + encodeURIComponent(cid) + '&t=' + Date.now();
+    };
+    tick();
+    LIVE_SNAPSHOT_TIMER = setInterval(tick, 350);
+  };
+
+  // For MJPEG, some browsers do not reliably fire onload for the first chunk.
+  let checks = 0;
+  const poll = setInterval(()=>{
+    checks += 1;
+    if ((live.naturalWidth && live.naturalWidth > 0) || (live.complete && live.currentSrc)) {
+      clearInterval(poll);
+      showFrame();
+      return;
+    }
+    if (checks >= 25) { // ~5s fallback to snapshot mode
+      clearInterval(poll);
+      startSnapshotLoop();
+    }
+  }, 200);
+
+  live.onload = ()=>{ clearInterval(poll); showFrame(); };
+  live.onerror = ()=>{
+    clearInterval(poll);
+    startSnapshotLoop();
+  };
+  stopSnapshotLoop();
   live.src = '/stream?t=' + Date.now();
 }
 function fmtTemp(v){ return (v===null || v===undefined) ? '\\u2014' : (Math.round(v)+'\\u00b0C'); }
@@ -549,6 +999,7 @@ async function refreshStats(){
     <div class="box">${t.gpu_temp||'GPU Temp'}: ${fmtTemp(s.health.gpu_temp)}</div>`;
   document.getElementById('stats').innerHTML = kpi;
   const ac = s.active_camera; const label = (t.current_cam||'Active camera');
+  ACTIVE_CAM_ID = ac && ac.id ? Number(ac.id) : ACTIVE_CAM_ID;
   const name = (ac && ac.name) ? ac.name : (t.default_cam || 'Default Camera');
   document.getElementById('statusLine').textContent = `${label}: ${name} / ${ac?.url||''}`;
 }
@@ -585,6 +1036,7 @@ async function refreshGrid(){
 setInterval(refreshStats, 2000);
 setInterval(refreshRT, 2000);
 setInterval(()=>{ if(!document.getElementById('panelMulti').classList.contains('hidden')) refreshGrid(); }, 2000);
+setInterval(()=>{ if(!document.getElementById('panelOps').classList.contains('hidden')) refreshOpsQueue(); }, 5000);
 (async ()=>{ showTab('live'); await applyLang(); await loadRepeatDuration(); await loadCams(); loadLive(); refreshStats(); refreshRT(); refreshGrid(); })();
 </script>
 </body>
@@ -646,7 +1098,10 @@ def api_snapshot(camera_id: int):
 
 from obsero.db import (cameras_all, camera_by_id, camera_upsert, camera_set_online,
                         alert_insert, alert_query, alert_update_status, audit,
-                        precision_query, db_conn)
+                        precision_query, db_conn, incident_assign,
+                        incident_transition, incident_merge, incident_queue,
+                        incident_update_fields, incident_timeline, alert_get,
+                        ops_kpi)
 
 
 @app.get("/api/status")
@@ -865,6 +1320,165 @@ def api_alerts(camera_id: int | None = None, level: str | None = None,
     return JSONResponse(rows)
 
 
+@app.get("/api/incidents/queue")
+def api_incident_queue(status: str | None = None,
+                       overdue: bool = False,
+                       limit: int = 100,
+                       include_children: bool = False):
+    rows = incident_queue(status=status, overdue=overdue, limit=limit,
+                          include_children=include_children)
+    return JSONResponse(rows)
+
+
+@app.get("/api/incidents/{incident_id}")
+def api_incident_get(incident_id: int):
+    row = alert_get(incident_id)
+    if not row:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    row["timeline"] = incident_timeline(incident_id)
+    return JSONResponse(row)
+
+
+@app.post("/api/incidents/{incident_id}/assign")
+def api_incident_assign(incident_id: int,
+                        assignee: str = Form(...),
+                        actor: str = Form("operator"),
+                        due_at: str = Form(None)):
+    try:
+        incident_assign(incident_id, assignee=assignee, actor=actor, due_at=due_at)
+        # Move into assigned state if currently open in early stages.
+        cur = alert_get(incident_id) or {}
+        if cur.get("status") in {"new", "triage", "ack"}:
+            incident_transition(incident_id, "assigned", actor=actor, note="assignment")
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    audit(actor, "incident_assign", f"{incident_id}:{assignee}")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/incidents/{incident_id}/label")
+def api_incident_label(incident_id: int,
+                       status: str = Form(...),
+                       actor: str = Form("operator"),
+                       reviewer: str = Form("operator"),
+                       note: str = Form(""),
+                       level: str = Form(None),
+                       type: str = Form(None),
+                       root_cause_code: str = Form(None),
+                       corrective_action_code: str = Form(None),
+                       policy_clause: str = Form(None),
+                       risk_score: int = Form(None),
+                       approver: str = Form(None)):
+    try:
+        incident_update_fields(
+            incident_id,
+            actor=actor,
+            level=level,
+            type=type,
+            root_cause_code=root_cause_code,
+            corrective_action_code=corrective_action_code,
+            policy_clause=policy_clause,
+            risk_score=risk_score,
+            approver=approver,
+        )
+        incident_transition(incident_id, status, actor=actor, note=note, reviewer=reviewer)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    audit(actor, "incident_label", f"{incident_id}:{status}")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/incidents/{incident_id}/close")
+def api_incident_close(incident_id: int,
+                       actor: str = Form("operator"),
+                       reviewer: str = Form("operator"),
+                       note: str = Form("manual close"),
+                       corrective_action_code: str = Form(None),
+                       approver: str = Form(None)):
+    try:
+        incident_update_fields(
+            incident_id,
+            actor=actor,
+            corrective_action_code=corrective_action_code,
+            approver=approver,
+        )
+        incident_transition(incident_id, "closed", actor=actor, note=note, reviewer=reviewer)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    audit(actor, "incident_close", str(incident_id))
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/incidents/{incident_id}/merge")
+def api_incident_merge(incident_id: int,
+                       child_id: int = Form(...),
+                       actor: str = Form("operator")):
+    try:
+        incident_merge(master_id=incident_id, child_id=child_id, actor=actor)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    audit(actor, "incident_merge", f"{child_id}->{incident_id}")
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/incidents/group_duplicates")
+def api_incident_group_duplicates(window_sec: int = 45,
+                                  iou_thr: float = 0.35,
+                                  open_only: bool = True):
+    window_sec = max(1, min(int(window_sec), 3600))
+    iou_thr = max(0.0, min(float(iou_thr), 1.0))
+
+    sql = """
+        SELECT id, ts, camera_id, type, bbox, status
+          FROM alerts
+         WHERE (merged_into IS NULL OR merged_into=0)
+    """
+    args: list = []
+    if open_only:
+      sql += " AND status <> 'closed'"
+    sql += " ORDER BY camera_id, type, ts ASC"
+
+    con = db_conn()
+    rows = [dict(r) for r in con.execute(sql, args).fetchall()]
+    con.close()
+
+    masters: dict[tuple[int | None, str], list[dict]] = {}
+    merged = 0
+    for row in rows:
+        cam = row.get("camera_id")
+        et = str(row.get("type") or "")
+        ts = _parse_db_ts(row.get("ts"))
+        if ts is None:
+            continue
+        bbox = _bbox_from_json(row.get("bbox"))
+        key = (cam, et)
+        bucket = masters.setdefault(key, [])
+        chosen: dict | None = None
+
+        # Only compare against recent masters inside the same grouping key.
+        keep: list[dict] = []
+        for m in bucket:
+            mts = m["ts"]
+            if (ts - mts).total_seconds() <= window_sec:
+                keep.append(m)
+                if chosen is None:
+                    if _bbox_iou(bbox, m["bbox"]) >= iou_thr:
+                        chosen = m
+        bucket[:] = keep
+
+        if chosen is not None:
+            try:
+                incident_merge(master_id=int(chosen["id"]), child_id=int(row["id"]), actor="dedupe")
+                merged += 1
+            except Exception:
+                continue
+        else:
+            bucket.append({"id": int(row["id"]), "ts": ts, "bbox": bbox})
+
+    audit("dedupe", "group_duplicates", f"merged={merged};window={window_sec};iou={iou_thr}")
+    return JSONResponse({"ok": True, "merged": merged, "window_sec": window_sec, "iou_thr": iou_thr})
+
+
 # ---- NEW: label (confirm/false_positive/ignore/close) ----------------------
 @app.post("/api/alerts/label")
 def api_alert_label(alert_id: int = Form(...),
@@ -897,6 +1511,60 @@ def api_precision(type: str | None = None, since: str | None = None,
                   min_reviewed: int = 1):
     return JSONResponse(precision_query(event_type=type, since=since,
                                         min_reviewed=min_reviewed))
+
+
+@app.get("/api/kpi/ops")
+def api_kpi_ops(since: str | None = None):
+    return JSONResponse(ops_kpi(since=since))
+
+
+@app.post("/api/reports/generate")
+def api_report_generate(report_type: str = Form("shift_summary"),
+                        fmt: str = Form("json"),
+                        since: str | None = Form(None),
+                        status: str | None = Form(None),
+                        overdue: bool = Form(False),
+                        limit: int = Form(500)):
+    rows = incident_queue(status=status, overdue=overdue, limit=limit,
+                          include_children=True)
+    kpi = ops_kpi(since=since)
+    payload = {
+        "generated_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "report_type": report_type,
+        "filters": {"since": since, "status": status, "overdue": overdue, "limit": limit},
+        "kpi": kpi,
+        "incidents": rows,
+    }
+
+    safe_type = "".join(ch for ch in report_type if ch.isalnum() or ch in ("_", "-")) or "report"
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    if fmt.lower() == "csv":
+        out = REPORTS_DIR / f"{safe_type}_{ts}.csv"
+        fieldnames = [
+            "id", "ts", "camera_id", "site", "type", "label", "level", "status", "assignee",
+            "approver", "risk_score", "due_at", "closed_at", "merged_into",
+        ]
+        with out.open("w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: r.get(k) for k in fieldnames})
+        return JSONResponse({"ok": True, "report": out.name, "format": "csv", "path": str(out)})
+
+    out = REPORTS_DIR / f"{safe_type}_{ts}.json"
+    out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return JSONResponse({"ok": True, "report": out.name, "format": "json", "path": str(out)})
+
+
+@app.get("/api/reports/{report_name}")
+def api_report_download(report_name: str):
+    safe = Path(report_name).name
+    p = REPORTS_DIR / safe
+    if not p.exists() or not p.is_file():
+        return JSONResponse({"error": "not found"}, status_code=404)
+    media = "application/json" if p.suffix.lower() == ".json" else "text/csv"
+    return FileResponse(str(p), media_type=media, filename=p.name)
 
 
 # ---- Upload / alarm levels / logs -------------------------------------------
