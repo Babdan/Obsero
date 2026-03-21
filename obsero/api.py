@@ -1,12 +1,12 @@
-"""
-obsero.api — FastAPI application, all routes, HTML UI.
+﻿"""
+obsero.api â€” FastAPI application, all routes, HTML UI.
 
 Routes preserved:
   /  /stream  /snapshot  /api/cameras  /api/alerts  /api/status  /incidents/*
 
 New routes:
-  POST /api/alerts/label          — confirm / false_positive / ignore / close
-  GET  /api/metrics/precision     — operational precision measurement
+  POST /api/alerts/label          â€” confirm / false_positive / ignore / close
+  GET  /api/metrics/precision     â€” operational precision measurement
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from fastapi.staticfiles import StaticFiles
 from obsero.config import CameraCfg, CAMERAS_JSON_PATH, CONFIG_PATH
 import yaml
 
-# ── paths ──
+# â”€â”€ paths â”€â”€
 ROOT = Path(__file__).resolve().parent.parent
 INCIDENTS_DIR = ROOT / "incidents"
 STATIC_DIR = ROOT / "static"
@@ -43,7 +43,7 @@ INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
 STATIC_DIR.mkdir(exist_ok=True)
 REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── GPU monitoring ──
+# â”€â”€ GPU monitoring â”€â”€
 try:
   with warnings.catch_warnings():
     warnings.filterwarnings(
@@ -57,9 +57,9 @@ try:
 except Exception:
     NVML_OK = False
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# App-level state — set by bootstrap (run.py) before uvicorn starts.
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# App-level state â€” set by bootstrap (run.py) before uvicorn starts.
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 class _AppState:
     stop_event: threading.Event = threading.Event()
     cam_mgr: Any = None                       # MultiCamProcManager
@@ -74,9 +74,9 @@ class _AppState:
 
 S = _AppState()
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # Helpers
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 def _encode_jpeg(img, q=82) -> bytes | None:
     ok, b = cv2.imencode(".jpg", img, [int(cv2.IMWRITE_JPEG_QUALITY), q])
@@ -282,9 +282,9 @@ def _sla_worker_loop():
         S.stop_event.wait(30.0)
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # FastAPI application
-# ═══════════════════════════════════════════════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 app = FastAPI(title="Obsero Safety Panel")
 app.mount("/incidents", StaticFiles(directory=str(INCIDENTS_DIR)), name="incidents")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -319,38 +319,41 @@ I18N = {
            "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU Util","vram":"VRAM","gpu_temp":"GPU Temp","cpu_temp":"CPU Temp",
            "realtime_alerts":"Real-time Alerts","grid_title":"Multi-view (snapshots, refresh every 2s)",
            "current_cam":"Active camera","view":"view","time":"Time","event":"Event","level":"Level","image":"Image",
-      "lang":"Language","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Default Camera",
+      "lang":"Language","english":"English","chinese":"ä¸­æ–‡","turkish":"TÃ¼rkÃ§e","default_cam":"Default Camera",
   "tab_settings":"Settings","tab_ops":"Incident Ops",
   "ops_title":"Incident Ops Queue","ops_status":"Status","ops_overdue":"overdue only",
   "ops_refresh":"Refresh","ops_group":"Group Duplicates","ops_export_json":"Export JSON","ops_export_csv":"Export CSV",
+  "ops_report_ready":"Report ready:","ops_report_view":"View","ops_report_download":"Download","ops_report_preview":"Preview",
   "ops_assign":"Assign","ops_update":"Update","ops_close":"Close","ops_merge":"Merge","ops_open":"Open",
   "ops_camera":"Camera","ops_assignee":"Assignee","ops_due":"Due","ops_actions":"Actions",
   "ops_kpi_backlog":"Backlog","ops_kpi_mtta":"MTTA","ops_kpi_mttr":"MTTR","ops_kpi_fp":"False+ Rate",
   "ops_popup_title":"Incident","ops_popup_save":"Save","ops_popup_cancel":"Cancel","ops_popup_timeline":"Timeline",
   "ops_note":"Note","ops_type":"Type","ops_site":"Site","ops_risk":"Risk","ops_policy":"Policy","ops_root_cause":"Root Cause",
   "ops_corrective":"Corrective Action","ops_approver":"Approver"},
-    "zh": {"title":"Obsero 安全面板","tab_live":"实时画面","tab_multi":"多路画面","switch":"切换到该摄像头",
-           "overall":"总体状态","sites":"场站","hosts":"分析主机","devices":"设备","online":"在线","offline":"离线",
-           "cpu":"CPU","ram":"内存","gpu":"显卡","gpu_util":"显卡占用","vram":"显存","gpu_temp":"显卡温度","cpu_temp":"CPU温度",
-           "realtime_alerts":"实时告警","grid_title":"分屏（快照，2秒刷新）","current_cam":"当前摄像头","view":"查看",
-      "time":"时间","event":"事件","level":"级别","image":"图像","lang":"语言","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"默认相机",
-      "tab_settings":"设置","tab_ops":"事件运营",
-      "ops_title":"事件队列","ops_status":"状态","ops_overdue":"仅逾期",
-      "ops_refresh":"刷新","ops_group":"重复合并","ops_export_json":"导出 JSON","ops_export_csv":"导出 CSV",
-      "ops_assign":"分配","ops_update":"更新","ops_close":"关闭","ops_merge":"合并","ops_open":"打开",
-      "ops_camera":"摄像头","ops_assignee":"负责人","ops_due":"截止时间","ops_actions":"操作",
-      "ops_kpi_backlog":"待处理","ops_kpi_mtta":"平均响应","ops_kpi_mttr":"平均关闭","ops_kpi_fp":"误报率",
-      "ops_popup_title":"事件","ops_popup_save":"保存","ops_popup_cancel":"取消","ops_popup_timeline":"时间线",
-      "ops_note":"备注","ops_type":"类型","ops_site":"站点","ops_risk":"风险","ops_policy":"政策","ops_root_cause":"根因",
-      "ops_corrective":"纠正措施","ops_approver":"审批人"},
-    "tr": {"title":"Obsero Güvenlik Paneli","tab_live":"Canlı Görüntü","tab_multi":"Çoklu Kamera","switch":"Kameraya Geç",
-           "overall":"Genel Durum","sites":"Saha","hosts":"Analiz Sunucuları","devices":"Cihazlar","online":"çevrimiçi","offline":"çevrimdışı",
-           "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU Kullanımı","vram":"VRAM","gpu_temp":"GPU Sıcaklığı","cpu_temp":"CPU Sıcaklığı",
-           "realtime_alerts":"Anlık Alarmlar","grid_title":"Çoklu Görünüm (anlık görüntü, 2 sn)","current_cam":"Aktif kamera","view":"gör",
-      "time":"Zaman","event":"Olay","level":"Seviye","image":"Görüntü","lang":"Dil","english":"English","chinese":"中文","turkish":"Türkçe","default_cam":"Varsayılan Kamera",
+    "zh": {"title":"Obsero å®‰å…¨é¢æ¿","tab_live":"å®žæ—¶ç”»é¢","tab_multi":"å¤šè·¯ç”»é¢","switch":"åˆ‡æ¢åˆ°è¯¥æ‘„åƒå¤´",
+           "overall":"æ€»ä½“çŠ¶æ€","sites":"åœºç«™","hosts":"åˆ†æžä¸»æœº","devices":"è®¾å¤‡","online":"åœ¨çº¿","offline":"ç¦»çº¿",
+           "cpu":"CPU","ram":"å†…å­˜","gpu":"æ˜¾å¡","gpu_util":"æ˜¾å¡å ç”¨","vram":"æ˜¾å­˜","gpu_temp":"æ˜¾å¡æ¸©åº¦","cpu_temp":"CPUæ¸©åº¦",
+           "realtime_alerts":"å®žæ—¶å‘Šè­¦","grid_title":"åˆ†å±ï¼ˆå¿«ç…§ï¼Œ2ç§’åˆ·æ–°ï¼‰","current_cam":"å½“å‰æ‘„åƒå¤´","view":"æŸ¥çœ‹",
+      "time":"æ—¶é—´","event":"äº‹ä»¶","level":"çº§åˆ«","image":"å›¾åƒ","lang":"è¯­è¨€","english":"English","chinese":"ä¸­æ–‡","turkish":"TÃ¼rkÃ§e","default_cam":"é»˜è®¤ç›¸æœº",
+      "tab_settings":"è®¾ç½®","tab_ops":"äº‹ä»¶è¿è¥",
+      "ops_title":"äº‹ä»¶é˜Ÿåˆ—","ops_status":"çŠ¶æ€","ops_overdue":"ä»…é€¾æœŸ",
+      "ops_refresh":"åˆ·æ–°","ops_group":"é‡å¤åˆå¹¶","ops_export_json":"å¯¼å‡º JSON","ops_export_csv":"å¯¼å‡º CSV",
+      "ops_report_ready":"æŠ¥å‘Šå·²ç”Ÿæˆï¼š","ops_report_view":"æŸ¥çœ‹","ops_report_download":"ä¸‹è½½","ops_report_preview":"é¢„è§ˆ",
+      "ops_assign":"åˆ†é…","ops_update":"æ›´æ–°","ops_close":"å…³é—­","ops_merge":"åˆå¹¶","ops_open":"æ‰“å¼€",
+      "ops_camera":"æ‘„åƒå¤´","ops_assignee":"è´Ÿè´£äºº","ops_due":"æˆªæ­¢æ—¶é—´","ops_actions":"æ“ä½œ",
+      "ops_kpi_backlog":"å¾…å¤„ç†","ops_kpi_mtta":"å¹³å‡å“åº”","ops_kpi_mttr":"å¹³å‡å…³é—­","ops_kpi_fp":"è¯¯æŠ¥çŽ‡",
+      "ops_popup_title":"äº‹ä»¶","ops_popup_save":"ä¿å­˜","ops_popup_cancel":"å–æ¶ˆ","ops_popup_timeline":"æ—¶é—´çº¿",
+      "ops_note":"å¤‡æ³¨","ops_type":"ç±»åž‹","ops_site":"ç«™ç‚¹","ops_risk":"é£Žé™©","ops_policy":"æ”¿ç­–","ops_root_cause":"æ ¹å› ",
+      "ops_corrective":"çº æ­£æŽªæ–½","ops_approver":"å®¡æ‰¹äºº"},
+    "tr": {"title":"Obsero GÃ¼venlik Paneli","tab_live":"CanlÄ± GÃ¶rÃ¼ntÃ¼","tab_multi":"Ã‡oklu Kamera","switch":"Kameraya GeÃ§",
+           "overall":"Genel Durum","sites":"Saha","hosts":"Analiz SunucularÄ±","devices":"Cihazlar","online":"Ã§evrimiÃ§i","offline":"Ã§evrimdÄ±ÅŸÄ±",
+           "cpu":"CPU","ram":"RAM","gpu":"GPU","gpu_util":"GPU KullanÄ±mÄ±","vram":"VRAM","gpu_temp":"GPU SÄ±caklÄ±ÄŸÄ±","cpu_temp":"CPU SÄ±caklÄ±ÄŸÄ±",
+           "realtime_alerts":"AnlÄ±k Alarmlar","grid_title":"Ã‡oklu GÃ¶rÃ¼nÃ¼m (anlÄ±k gÃ¶rÃ¼ntÃ¼, 2 sn)","current_cam":"Aktif kamera","view":"gÃ¶r",
+      "time":"Zaman","event":"Olay","level":"Seviye","image":"GÃ¶rÃ¼ntÃ¼","lang":"Dil","english":"English","chinese":"ä¸­æ–‡","turkish":"TÃ¼rkÃ§e","default_cam":"VarsayÄ±lan Kamera",
       "tab_settings":"Ayarlar","tab_ops":"Olay Operasyon",
       "ops_title":"Olay Operasyon Kuyrugu","ops_status":"Durum","ops_overdue":"yalnizca geciken",
       "ops_refresh":"Yenile","ops_group":"Yinelenenleri Birlestir","ops_export_json":"JSON Disa Aktar","ops_export_csv":"CSV Disa Aktar",
+      "ops_report_ready":"Rapor hazir:","ops_report_view":"Goruntule","ops_report_download":"Indir","ops_report_preview":"Onizleme",
       "ops_assign":"Ata","ops_update":"Guncelle","ops_close":"Kapat","ops_merge":"Birlestir","ops_open":"Ac",
       "ops_camera":"Kamera","ops_assignee":"Sorumlu","ops_due":"Termin","ops_actions":"Islemler",
       "ops_kpi_backlog":"Bekleyen","ops_kpi_mtta":"MTTA","ops_kpi_mttr":"MTTR","ops_kpi_fp":"Yanlis+ Orani",
@@ -504,6 +507,7 @@ HOME_HTML = """
     .overlay .spinner{width:54px;height:54px;border-top-color:var(--accent-2)}
     .kpi{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
     .kpi .box{background:#0f1620;border:1px solid #203041;border-radius:10px;padding:8px 10px}
+    .report-view{background:#0b1118;border:1px solid #203041;border-radius:8px;max-height:60vh;overflow:auto;padding:10px;white-space:pre-wrap;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:#d6e5f3}
     .hidden{display:none}
   </style>
 </head>
@@ -514,8 +518,8 @@ HOME_HTML = """
     <span class="small" id="t-lang">Language</span>
     <select id="langSel" onchange="setLang(this.value)">
       <option value="en">English</option>
-      <option value="zh">中文</option>
-      <option value="tr">Türkçe</option>
+      <option value="zh">ä¸­æ–‡</option>
+      <option value="tr">TÃ¼rkÃ§e</option>
     </select>
   </div>
 </header>
@@ -601,6 +605,12 @@ HOME_HTML = """
       </div>
       <div id="opsKpi" class="small" style="margin-bottom:8px"></div>
       <div id="opsMsg" class="small"></div>
+      <div id="opsReportActions" class="row hidden" style="margin:8px 0;flex-wrap:wrap">
+        <span id="ops-report-ready-label" class="small">Report ready:</span>
+        <a id="opsReportViewLink" class="badge" href="#" target="_blank">View</a>
+        <a id="opsReportDownloadLink" class="badge" href="#">Download</a>
+        <button class="ghost" id="opsReportPreviewBtn" onclick="previewLastReport()">Preview</button>
+      </div>
       <table>
         <thead><tr>
           <th>ID</th><th id="ops-th-time">Time</th><th id="ops-th-camera">Camera</th><th id="ops-th-event">Event</th><th id="ops-th-level">Level</th><th id="ops-th-status">Status</th><th id="ops-th-assignee">Assignee</th><th id="ops-th-due">Due</th><th id="ops-th-image">Image</th><th id="ops-th-actions">Actions</th>
@@ -651,9 +661,20 @@ HOME_HTML = """
     </div>
   </div>
 </div>
+<div class="overlay" id="reportOverlay">
+  <div class="card" style="width:min(980px,95vw);max-height:90vh;overflow:auto">
+    <div class="row" style="justify-content:space-between;align-items:center">
+      <h3 id="reportTitle" style="margin:0">Report Preview</h3>
+      <button class="ghost" id="report-close-btn" onclick="closeReportViewer()">Close</button>
+    </div>
+    <div id="reportMeta" class="small" style="margin:8px 0"></div>
+    <pre id="reportContent" class="report-view"></pre>
+  </div>
+</div>
 <script>
 let LANG = localStorage.getItem('lang') || 'en';
 let OPS_ACTIVE_ID = null;
+let OPS_LAST_REPORT = null;
 let ACTIVE_CAM_ID = null;
 let LIVE_SNAPSHOT_TIMER = null;
 document.getElementById('langSel').value = LANG;
@@ -694,6 +715,8 @@ async function applyLang(){
   const xmap = {
     'ops-status-label':'ops_status','ops-overdue-label':'ops_overdue','ops-refresh-btn':'ops_refresh',
     'ops-group-btn':'ops_group','ops-export-json-btn':'ops_export_json','ops-export-csv-btn':'ops_export_csv',
+    'ops-report-ready-label':'ops_report_ready','opsReportViewLink':'ops_report_view',
+    'opsReportDownloadLink':'ops_report_download','opsReportPreviewBtn':'ops_report_preview',
     'ops-th-time':'time','ops-th-camera':'ops_camera','ops-th-event':'event','ops-th-level':'level',
     'ops-th-status':'ops_status','ops-th-assignee':'ops_assignee','ops-th-due':'ops_due','ops-th-image':'image',
     'ops-th-actions':'ops_actions','ops-modal-title':'ops_popup_title','ops-save-btn':'ops_popup_save',
@@ -769,6 +792,50 @@ function opsSetMsg(msg, bad=false){
   const el = document.getElementById('opsMsg');
   el.textContent = msg;
   el.style.color = bad ? '#ffb8b8' : '#9fb3c8';
+}
+function setLatestReport(reportName){
+  OPS_LAST_REPORT = reportName || null;
+  const wrap = document.getElementById('opsReportActions');
+  const viewLink = document.getElementById('opsReportViewLink');
+  const dlLink = document.getElementById('opsReportDownloadLink');
+  if(!OPS_LAST_REPORT){
+    wrap.classList.add('hidden');
+    viewLink.href = '#';
+    dlLink.href = '#';
+    return;
+  }
+  const base = '/api/reports/' + encodeURIComponent(OPS_LAST_REPORT);
+  viewLink.href = base + '?disposition=inline';
+  dlLink.href = base + '?disposition=attachment';
+  dlLink.setAttribute('download', OPS_LAST_REPORT);
+  wrap.classList.remove('hidden');
+}
+function closeReportViewer(){
+  document.getElementById('reportOverlay').style.display = 'none';
+}
+async function openReportViewer(reportName){
+  const safeName = (reportName || '').trim();
+  if(!safeName){
+    opsSetMsg('No report selected.', true);
+    return;
+  }
+  const r = await fetch('/api/reports/' + encodeURIComponent(safeName) + '/content');
+  const d = await r.json();
+  if(!r.ok || !d.ok){
+    opsSetMsg('Could not load report preview.', true);
+    return;
+  }
+  document.getElementById('reportTitle').textContent = 'Report Preview: ' + d.report;
+  document.getElementById('reportMeta').textContent = 'Format: ' + (d.format || '-') + ' | Size: ' + (d.size_bytes || 0) + ' bytes';
+  document.getElementById('reportContent').textContent = d.content || '';
+  document.getElementById('reportOverlay').style.display = 'flex';
+}
+async function previewLastReport(){
+  if(!OPS_LAST_REPORT){
+    opsSetMsg('Generate a report first.', true);
+    return;
+  }
+  await openReportViewer(OPS_LAST_REPORT);
 }
 async function opsAssign(id){
   const assignee = prompt('Assign incident to (username/role):', 'supervisor');
@@ -879,9 +946,9 @@ async function generateReport(fmt){
   const r = await opsPost('/api/reports/generate', {report_type:'ops_queue', fmt:fmt, status:status, overdue:overdue, limit:500});
   const d = await r.json();
   if(!r.ok || !d.ok){ opsSetMsg('Report generation failed', true); return; }
-  const link = '/api/reports/' + encodeURIComponent(d.report);
   opsSetMsg('Report ready: '+d.report);
-  window.open(link, '_blank');
+  setLatestReport(d.report);
+  await openReportViewer(d.report);
 }
 async function refreshOpsQueue(){
   const status = document.getElementById('opsStatus').value || '';
@@ -1094,7 +1161,7 @@ def api_snapshot(camera_id: int):
     return Response(content=ph, media_type="image/jpeg")
 
 
-# ════════════════════════════ REST APIs ══════════════════════════════════════
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• REST APIs â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
 from obsero.db import (cameras_all, camera_by_id, camera_upsert, camera_set_online,
                         alert_insert, alert_query, alert_update_status, audit,
@@ -1558,13 +1625,35 @@ def api_report_generate(report_type: str = Form("shift_summary"),
 
 
 @app.get("/api/reports/{report_name}")
-def api_report_download(report_name: str):
+def api_report_download(report_name: str, disposition: str = "attachment"):
     safe = Path(report_name).name
     p = REPORTS_DIR / safe
     if not p.exists() or not p.is_file():
         return JSONResponse({"error": "not found"}, status_code=404)
     media = "application/json" if p.suffix.lower() == ".json" else "text/csv"
+    if disposition == "inline":
+        return FileResponse(str(p), media_type=media)
     return FileResponse(str(p), media_type=media, filename=p.name)
+
+
+@app.get("/api/reports/{report_name}/content")
+def api_report_content(report_name: str):
+    safe = Path(report_name).name
+    p = REPORTS_DIR / safe
+    if not p.exists() or not p.is_file():
+        return JSONResponse({"ok": False, "error": "not found"}, status_code=404)
+    try:
+        text = p.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        text = p.read_text(encoding="latin-1", errors="replace")
+    fmt = "json" if p.suffix.lower() == ".json" else "csv"
+    return JSONResponse({
+        "ok": True,
+        "report": p.name,
+        "format": fmt,
+        "size_bytes": p.stat().st_size,
+        "content": text,
+    })
 
 
 # ---- Upload / alarm levels / logs -------------------------------------------
