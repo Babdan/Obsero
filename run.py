@@ -155,7 +155,7 @@ def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue):
         cam_map: dict[int, tuple] = {}
         active_id = None
         for dbc in db_cams:
-            cc = cam_cfg_by_code.get(dbc.get("code"))
+            cc = cam_cfg_by_code.get(dbc.get("code") or "")
             if cc:
                 cam_map[dbc["id"]] = (cc.url, cc.max_fps, cc.target_side)
                 if active_id is None:

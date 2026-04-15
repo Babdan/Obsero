@@ -84,6 +84,7 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
     if path is None:
         print(f"[{proc_name}] ERROR: no weights found for stem={stem}", flush=True)
         return
+    pt_path = MODELS_DIR / f"{stem}.pt"
 
     try:
         model = YOLO(str(path), task="detect")
@@ -123,15 +124,26 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
                 dets = []
                 names = r0.names
                 if r0.boxes is not None and r0.boxes.xyxy is not None:
-                    xyxy = r0.boxes.xyxy.cpu().numpy()
-                    conf = r0.boxes.conf.cpu().numpy()
-                    cls = r0.boxes.cls.cpu().numpy()
+                    xyxy = r0.boxes.xyxy.cpu().numpy()  # type: ignore[attr-defined]
+                    conf = r0.boxes.conf.cpu().numpy()  # type: ignore[attr-defined]
+                    cls = r0.boxes.cls.cpu().numpy()    # type: ignore[attr-defined]
                     for i in range(xyxy.shape[0]):
                         dets.append([float(xyxy[i, 0]), float(xyxy[i, 1]),
                                      float(xyxy[i, 2]), float(xyxy[i, 3]),
                                      float(conf[i]), int(cls[i])])
                 output_q.put((camera_id, tag, dets, names, gpu_id, model_key))
             except Exception as e:
+                # Some TRT failures happen on first predict() (not model init).
+                if is_trt and pt_path.exists():
+                    print(f"[{proc_name}] TRT runtime error ({e}); switching to PT fallback", flush=True)
+                    try:
+                        model = YOLO(str(pt_path), task="detect")
+                        is_trt = False
+                        path = pt_path
+                        print(f"[{proc_name}] PT fallback active: {pt_path.name}", flush=True)
+                        continue
+                    except Exception as e2:
+                        print(f"[{proc_name}] PT fallback failed after TRT runtime error: {e2}", flush=True)
                 print(f"[{proc_name}] inference error: {e}", flush=True)
                 traceback.print_exc(file=sys.stdout)
 
@@ -215,9 +227,6 @@ def camera_proc(camera_id: int, source, out_q: mp.Queue,
                 if not cap_local.isOpened():
                     cap_local.release()
                     cap_local = cv2.VideoCapture(idx, cv2.CAP_MSMF)
-                    if not cap_local.isOpened():
-                        cap_local.release()
-                        cap_local = cv2.VideoCapture(idx, cv2.CAP_ANY)
             else:
                 cap_local = cv2.VideoCapture(idx, cv2.CAP_ANY)
             return cap_local

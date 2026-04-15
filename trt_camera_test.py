@@ -163,12 +163,16 @@ def inference_worker(tag, model, is_trt, conf_thr, keywords, in_q, out_q, stop_e
                                         imgsz=IMG_SIZE, half=is_trt, verbose=False)
                 r0 = reslist[0]
                 dets = sv.Detections.from_ultralytics(r0)
+                names_map = r0.names or {}
 
                 # create labels + save incidents on keyword match
                 labels = []
+                class_ids = dets.class_id
+                if class_ids is None:
+                    continue
                 for i, xyxy in enumerate(dets.xyxy):
-                    cls_id = int(dets.class_id[i])
-                    name   = r0.names.get(cls_id, str(cls_id))
+                    cls_id = int(class_ids[i])
+                    name   = names_map.get(cls_id, str(cls_id))
                     conf   = float(dets.confidence[i]) if dets.confidence is not None else 0.0
                     labels.append(f"{TAG}:{name} {conf:.2f}")
                     if any(k.lower() in name.lower() for k in keywords):

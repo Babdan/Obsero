@@ -22,4 +22,5 @@ pynvml>=11.500.0
 pyyaml>=6.0
 
 # Optional: For better performance
+nvidia-pyindex>=1.0.9
 tensorrt>=8.6.0

@@ -71,6 +71,7 @@ class _AppState:
     annotated_snaps: dict = {}                # camera_id -> annotated jpeg
     annotated_snaps_lock: threading.Lock = threading.Lock()
     incidents_ring: deque = deque(maxlen=200)
+    _mp_inputs: Any = None
 
 S = _AppState()
 
@@ -1236,10 +1237,10 @@ def api_set_repeat_duration(seconds: float = 8.0):
 
 
 @app.get("/api/setup/webcams")
-def api_setup_webcams(max_index: int = 6):
+def api_setup_webcams(max_index: int = 12):
   try:
     from discover_cameras import discover_webcams
-    max_index = max(1, min(max_index, 16))
+    max_index = max(1, min(max_index, 32))
     cams = discover_webcams(max_index)
     return JSONResponse({"ok": True, "cameras": cams})
   except Exception as exc:

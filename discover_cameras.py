@@ -49,9 +49,9 @@ DEFAULT_MAX_CHANNELS = 16
 DEFAULT_RTSP_PORT = 554
 DEFAULT_SUBNETS = ["192.168.1"]
 
-# How many webcam indices to try when no NVR is found
-# Keep this conservative to avoid repeatedly opening virtual camera backends.
-MAX_WEBCAM_INDEX = 6
+# How many webcam indices to try when no NVR is found.
+# Some Windows systems expose the real camera at a higher index due to virtual devices.
+MAX_WEBCAM_INDEX = 12
 
 # Camera defaults written to JSON
 DEFAULT_GPU_ID = 0
@@ -183,12 +183,12 @@ def discover_webcams(max_index: int = MAX_WEBCAM_INDEX) -> list[dict]:
             return cv2.VideoCapture(idx, cv2.CAP_ANY)
 
         # Prefer DirectShow, then Media Foundation, then generic fallback.
-        for be in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+        for be in (cv2.CAP_DSHOW, cv2.CAP_MSMF):
             cap_try = cv2.VideoCapture(idx, be)
             if cap_try.isOpened():
                 return cap_try
             cap_try.release()
-        return cv2.VideoCapture(idx, cv2.CAP_ANY)
+        return cv2.VideoCapture(idx, cv2.CAP_DSHOW)
 
     for idx in range(max_index):
         cap = _open_index_with_fallback(idx)
@@ -218,6 +218,8 @@ def discover_webcams(max_index: int = MAX_WEBCAM_INDEX) -> list[dict]:
             cap.release()
     if not cameras:
         print("[discover]   no webcams found")
+        if sys.platform == "win32":
+            print("[discover]   hint: close Zoom/Teams/Camera app, allow Camera privacy access, and verify driver")
     return cameras
 
 
