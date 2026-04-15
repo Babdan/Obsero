@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(grep -r \"pass$\" \"/c/Users/bogdi/Desktop/UESTCO/Safety Vision Project/Obsero - Open Source/obsero\" --include=\"*.py\")",
-      "Bash(wc -l \"/c/Users/bogdi/Desktop/UESTCO/Safety Vision Project/Obsero - Open Source\"/obsero/*.py)"
+      "Bash(wc -l \"/c/Users/bogdi/Desktop/UESTCO/Safety Vision Project/Obsero - Open Source\"/obsero/*.py)",
+      "Bash(python3 -)",
+      "Bash(git config *)"
     ]
   }
 }

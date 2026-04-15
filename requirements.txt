@@ -1,4 +1,16 @@
-# Obsero Safety Panel - Requirements
+# Obsero Safety Panel — Requirements
+#
+# Use install.py for a fully automated setup (detects CUDA, installs the
+# correct torch/torchvision CUDA wheel, and handles TensorRT automatically):
+#
+#   python install.py            # auto-detect CUDA
+#   python install.py --cpu      # force CPU-only
+#   python install.py --dry-run  # preview commands
+#
+# If you must use pip directly, install torch first with your CUDA version:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# (supported tags: cu124, cu121, cu118 — or omit --index-url for CPU-only)
+
 # Core ML & Computer Vision
 torch>=2.0.0
 torchvision>=0.15.0
@@ -21,6 +33,6 @@ pynvml>=11.500.0
 # Configuration
 pyyaml>=6.0
 
-# Optional: For better performance
-nvidia-pyindex>=1.0.9
-tensorrt>=8.6.0
+# TensorRT is installed automatically by install.py when a CUDA GPU is detected.
+# Manual install (NVIDIA GPU only):
+#   pip install nvidia-pyindex && pip install tensorrt>=8.6.0
