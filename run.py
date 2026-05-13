@@ -37,7 +37,8 @@ import uvicorn
 # ── Obsero modules ──
 from obsero.config import load_config, SystemConfig
 from obsero.db import (db_init, cameras_all, camera_upsert, camera_set_online,
-                        audit, db_conn)
+                        audit, db_conn, alert_insert)
+from obsero.fall_detection import ExternalFallDetectionManager
 from obsero.rules import GateManager
 from obsero.workers import (
     FanOut, MultiCamProcManager,
@@ -171,6 +172,15 @@ def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue):
         S.cam_mgr = cam_mgr
         S.cfg = cfg
 
+        fall_mgr = ExternalFallDetectionManager(
+            cfg.fall_detection,
+            {cid: src for cid, (src, _fps, _side) in cam_map.items()},
+            alert_writer=alert_insert,
+            audit_writer=audit,
+        )
+        fall_mgr.start()
+        S.fall_detection_mgr = fall_mgr
+
         # ── Last-seen timestamps for offline detection ──
         last_seen: dict[int, float] = {}
 
@@ -272,6 +282,9 @@ def main():
 
     # ── Teardown ──
     S.stop_event.set()
+    fall_mgr = getattr(S, "fall_detection_mgr", None)
+    if fall_mgr:
+        fall_mgr.stop()
     if S.cam_mgr:
         S.cam_mgr.stop_all()
     mp_inputs = getattr(S, "_mp_inputs", {})

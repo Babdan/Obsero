@@ -86,6 +86,29 @@ rules:
 An incident is only created when **both** the streak **and** the ratio gate
 pass, reducing false positives to meet the 80 % precision target.
 
+### External Fall Detector Adapter
+
+Obsero can also run a separate fall-detection project beside the built-in YOLO
+`fall` model. Enable it after placing detector code in `fall-detection/` with a
+`FallDetector` class:
+
+```yaml
+fall_detection:
+  enabled: true
+  project_dir: fall-detection
+  config_path: fall-detection/config/fall_detection_config.yaml
+  snapshot_dir: incidents/fall_detection
+  log_dir: data/fall_detection/logs
+  disable_builtin_fall_model: false
+```
+
+The adapter starts one detector per Obsero camera source, calls
+`FallDetector.start(...)`, and bridges emitted `FallAlarmEvent` objects into
+Obsero `FALL` alerts, snapshots, and audit logs. It writes a generated runtime
+config under `data/fall_detection/` so the detector's original YAML stays
+unchanged. If the external detector should fully replace the built-in YOLO fall
+worker, set `disable_builtin_fall_model: true`.
+
 ### Camera Offline Detection
 
 ```yaml

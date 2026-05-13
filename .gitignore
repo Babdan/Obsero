@@ -9,6 +9,7 @@ venv/
 .vscode/
 
 data/panel.db
+data/fall_detection/
 incidents/
 data/incidents/
 data/reports/
@@ -23,3 +24,4 @@ data/reports/
 models/*.pt
 models/*.onnx
 models/*.engine
+opencode.json

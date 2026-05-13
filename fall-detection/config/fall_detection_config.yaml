@@ -1,0 +1,100 @@
+# =============================================================================
+# Fall Detection System PoC — Configuration
+# =============================================================================
+
+# --- Pose Extraction (MediaPipe Tasks API) ---
+pose:
+  model_path: "models/pose_landmarker_heavy.task"
+  min_detection_confidence: 0.5
+  min_tracking_confidence: 0.5
+  static_image_mode: false
+
+# --- Skeleton Normalization ---
+normalization:
+  method: "hip_center_scale"         # Options: hip_center_scale, min_max, z_score
+  center_joint: "mid_hip"            # Midpoint of left/right hip
+  scale_reference: "torso_length"    # hip-to-shoulder distance
+  smoothing: "exponential"           # Options: none, moving_avg, exponential
+  smoothing_alpha: 0.7               # EMA alpha (higher = less smoothing)
+  epsilon: 1.0e-6                    # Avoid division by zero
+
+# --- Keypoint Buffer (Sliding Window) ---
+buffer:
+  window_size: 30                    # Number of frames in sliding window
+  target_fps: 10                     # Subsample from camera FPS to this rate
+  min_frames_for_prediction: 15      # Minimum filled frames before inference
+  stride: 3                          # Inference every N new frames
+
+# --- Temporal Model (TCN) ---
+model:
+  architecture: "tcn"                # Options: tcn, gru, lstm
+  input_size: 102                    # 17 keypoints x 2 x 3 (position + velocity + acceleration)
+  tcn_channels: [64, 128, 128]       # Channel sizes per TCN block
+  tcn_kernel_size: 3                 # Temporal conv kernel size
+  dropout: 0.3
+  # GRU/LSTM fallback options
+  hidden_size: 128
+  num_layers: 2
+  bidirectional: false
+  # Model weights
+  weights_path: "models/fall_detector_tcn.pth"
+  allow_untrained: false             # Only set true for non-production tests
+
+# --- Decision Logic ---
+decision:
+  model_threshold: 0.50              # Min probability from temporal model
+  confirmation_frames: 2             # Frames above threshold needed
+  confirmation_window: 5             # Check within this many recent frames
+  cooldown_sec: 5.0                  # Seconds before a new alarm can fire
+  # Rule-based guards (2+ must pass alongside model for confirmed alarm)
+  rules:
+    min_vertical_velocity: 0.10      # Normalized units/frame (hip descent speed)
+    max_final_hip_height: 0.40       # Normalized hip Y (0=top, 1=bottom of frame)
+    min_lying_duration_sec: 0.5      # Person must stay low for this long
+    enable_rules: true               # Set false to rely on model only
+
+# --- Camera ---
+camera:
+  source: 0                          # Camera index or RTSP URL string
+  capture_fps: 30                    # Camera native FPS
+  resolution: [640, 480]             # [width, height]
+
+# --- Alarm / Event Output ---
+alarm:
+  event_type: "fall_detection"
+  severity_levels:
+    confirmed: "critical"
+    suspected: "warning"
+  save_snapshot: true
+  snapshot_dir: "logs/snapshots"
+
+# --- Debug Logging ---
+debug:
+  enabled: true
+  log_dir: "logs"
+  save_keypoints: true               # Save .npy keypoint sequences on events
+  save_raw_frames: false             # Save raw camera frames (disk-heavy)
+  log_interval_sec: 1.0             # Console status print interval
+  max_log_files: 1000               # Auto-cleanup old debug files
+
+# --- Training ---
+training:
+  data_dir: "data/processed"
+  raw_video_dir: "data/raw_videos"
+  window_size: 30                    # Must match buffer.window_size
+  window_overlap: 0.5               # 50% overlap for sliding window segmentation
+  target_fps: 10                     # Must match buffer.target_fps
+  train_val_split: 0.8
+  batch_size: 32
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 1.0e-4
+  patience: 15                       # Early stopping patience
+  focal_loss_alpha: 0.75             # Focal loss alpha (weight for positive class)
+  focal_loss_gamma: 2.0              # Focal loss gamma
+  augmentation:
+    enabled: true
+    time_scale_range: [0.8, 1.2]     # Random speed ±20%
+    joint_dropout_prob: 0.1          # Zero out random joints
+    noise_std: 0.01                  # Gaussian noise on coordinates
+    horizontal_flip: true

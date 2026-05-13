@@ -64,6 +64,17 @@ class ServerCfg:
 
 
 @dataclass
+class FallDetectionCfg:
+    enabled: bool = False
+    project_dir: str = "fall-detection"
+    config_path: str = "fall-detection/config/fall_detection_config.yaml"
+    camera_ids: list[int] = field(default_factory=list)
+    snapshot_dir: str = "incidents/fall_detection"
+    log_dir: str = "data/fall_detection/logs"
+    disable_builtin_fall_model: bool = False
+
+
+@dataclass
 class SystemConfig:
     server: ServerCfg = field(default_factory=ServerCfg)
     gpus: list[GpuCfg] = field(default_factory=lambda: [GpuCfg(id=0)])
@@ -73,6 +84,7 @@ class SystemConfig:
     camera_offline_timeout_sec: float = 15.0
     default_cooldown_sec: float = 5.0
     per_tag_cooldown: dict[str, float] = field(default_factory=dict)
+    fall_detection: FallDetectionCfg = field(default_factory=FallDetectionCfg)
 
     # ------- helpers -------
     def gpu_ids(self) -> list[int]:
@@ -93,9 +105,12 @@ class SystemConfig:
     def needed_gpu_model_pairs(self) -> set[tuple[int, str]]:
         """Return set of (gpu_id, model_key) actually needed."""
         gpu_ids_with_cameras = {c.gpu_id for c in self.cameras}
+        models = self.models
+        if self.fall_detection.enabled and self.fall_detection.disable_builtin_fall_model:
+            models = [m for m in models if m.key != "fall"]
         pairs = set()
         for gid in gpu_ids_with_cameras:
-            for m in self.models:
+            for m in models:
                 pairs.add((gid, m.key))
         return pairs
 
@@ -150,6 +165,19 @@ def _parse_config(raw: dict[str, Any]) -> SystemConfig:
     for k, v in raw.get("per_tag_cooldown", {}).items():
         per_tag[str(k)] = float(v)
 
+    fall_raw = raw.get("fall_detection", {})
+    fall_detection = FallDetectionCfg(
+        enabled=bool(fall_raw.get("enabled", False)),
+        project_dir=str(fall_raw.get("project_dir", "fall-detection")),
+        config_path=str(fall_raw.get(
+            "config_path", "fall-detection/config/fall_detection_config.yaml"
+        )),
+        camera_ids=[int(cid) for cid in fall_raw.get("camera_ids", [])],
+        snapshot_dir=str(fall_raw.get("snapshot_dir", "incidents/fall_detection")),
+        log_dir=str(fall_raw.get("log_dir", "data/fall_detection/logs")),
+        disable_builtin_fall_model=bool(fall_raw.get("disable_builtin_fall_model", False)),
+    )
+
     return SystemConfig(
         server=server,
         gpus=gpus,
@@ -159,6 +187,7 @@ def _parse_config(raw: dict[str, Any]) -> SystemConfig:
         camera_offline_timeout_sec=float(raw.get("camera_offline_timeout_sec", 15.0)),
         default_cooldown_sec=float(raw.get("default_cooldown_sec", 5.0)),
         per_tag_cooldown=per_tag,
+        fall_detection=fall_detection,
     )
 
 
