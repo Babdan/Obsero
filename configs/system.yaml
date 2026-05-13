@@ -78,7 +78,7 @@ default_cooldown_sec: 60.0
 per_tag_cooldown:
   FIRE_SMOKE: 8.0
 fall_detection:
-  enabled: false
+  enabled: true
   project_dir: fall-detection
   config_path: fall-detection/config/fall_detection_config.yaml
   camera_ids: []

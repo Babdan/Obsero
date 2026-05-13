@@ -255,6 +255,10 @@ class _FallDetectorRuntime:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=timeout)
 
+    def push_frame(self, frame: Any, timestamp_ms: int) -> None:
+        if self.detector and hasattr(self.detector, 'push_frame'):
+            self.detector.push_frame(frame, timestamp_ms)
+
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
         self.loop = loop
@@ -319,7 +323,7 @@ class ExternalFallDetectionManager:
             print("[fall-detection] no matching camera sources configured", flush=True)
             return
 
-        for camera_id, source in selected_sources.items():
+        for camera_id, _source in selected_sources.items():
             try:
                 detector = detector_cls(str(runtime_config))
             except Exception as exc:
@@ -327,7 +331,7 @@ class ExternalFallDetectionManager:
                 traceback.print_exc(file=sys.stdout)
                 continue
 
-            runtime = _FallDetectorRuntime(detector, camera_id, source)
+            runtime = _FallDetectorRuntime(detector, camera_id, "shared_queue")
             runtime.start()
             self.instances.append(runtime)
 
@@ -337,6 +341,11 @@ class ExternalFallDetectionManager:
         for instance in self.instances:
             instance.stop()
         self.instances.clear()
+
+    def push_frame(self, camera_id: int, frame: Any, timestamp_ms: int) -> None:
+        for instance in self.instances:
+            if instance.camera_id == camera_id:
+                instance.push_frame(frame, timestamp_ms)
 
     def _selected_sources(self) -> dict[int, object]:
         if not self.cfg.camera_ids:

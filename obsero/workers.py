@@ -344,6 +344,15 @@ def camera_router_thread(out_q: mp.Queue, fanout: FanOut,
         # fan out to model workers
         fanout.send(jpeg_small, camera_id)
 
+        # push to external fall detection
+        from obsero.api import S
+        fall_mgr = getattr(S, 'fall_detection_mgr', None)
+        if fall_mgr:
+            arr = np.frombuffer(jpeg_small, np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is not None:
+                fall_mgr.push_frame(camera_id, frame, int(time.time() * 1000))
+
         # mark camera online (once)
         if camera_id not in seen_online:
             try:

@@ -80,7 +80,7 @@ def seed_cameras_from_config(cfg: SystemConfig):
     return cameras_all()
 
 
-def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue):
+def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue, dev_mode: bool = False):
     """
     Runs in a worker thread.  Spawns:
       1. Model workers (one per (model_key, gpu_id) pair)
@@ -219,6 +219,33 @@ def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue):
         # store references for shutdown
         S._mp_inputs = mp_inputs
 
+        if dev_mode:
+            def dev_status_printer():
+                while not stop.wait(10.0):
+                    print("\n" + "="*45, flush=True)
+                    print("  [DEV] Model & System Status", flush=True)
+                    print("="*45, flush=True)
+                    print("Obsero Core Models:", flush=True)
+                    for key, procs in mp_inputs.items():
+                        for idx, (q_in, p) in enumerate(procs):
+                            alive = "ALIVE" if p.is_alive() else "DEAD "
+                            try:
+                                q_sz = q_in.qsize()
+                            except NotImplementedError:
+                                q_sz = "?"
+                            print(f"  - {key:<12} | PID: {p.pid:<5} | {alive} | Queue: {q_sz}", flush=True)
+                    
+                    print("\nExternal Fall Detection Models:", flush=True)
+                    if getattr(S, 'fall_detection_mgr', None) and S.fall_detection_mgr.instances:
+                        for inst in S.fall_detection_mgr.instances:
+                            alive = "ALIVE" if (inst.thread and inst.thread.is_alive()) else "DEAD "
+                            print(f"  - Camera {inst.camera_id:<5} | {alive}", flush=True)
+                    else:
+                        print("  (No external fall detectors running)", flush=True)
+                    print("="*45 + "\n", flush=True)
+
+            threading.Thread(target=dev_status_printer, daemon=True, name="DevStatusPrinter").start()
+
         print("[boot] backend bootstrap complete", flush=True)
     except Exception as e:
         print(f"[boot] ERROR: {e}", flush=True)
@@ -249,6 +276,7 @@ def main():
                         help="Path to system.yaml (default: configs/system.yaml)")
     parser.add_argument("--host", type=str, default=None)
     parser.add_argument("--port", type=int, default=None)
+    parser.add_argument("--dev", action="store_true", help="Enable dev mode (prints model statuses periodically)")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -267,7 +295,7 @@ def main():
     camera_out_q = mp.Queue(maxsize=200)
 
     # ── Boot backend in worker thread ──
-    threading.Thread(target=backend_bootstrap, args=(cfg, camera_out_q),
+    threading.Thread(target=backend_bootstrap, args=(cfg, camera_out_q, args.dev),
                      daemon=True).start()
 
     # ── Uvicorn in MAIN thread (Windows-stable) ──

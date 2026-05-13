@@ -14,6 +14,7 @@ import cv2
 import yaml
 import torch
 import numpy as np
+import queue
 from collections import deque
 from pathlib import Path
 from typing import Optional, Union
@@ -115,6 +116,7 @@ class FallDetector:
             maxlen=buf_cfg["window_size"]
         )
         self._raw_timestamps: deque = deque(maxlen=buf_cfg["window_size"])
+        self._frame_queue = queue.Queue(maxsize=30)
 
     def _resolve_weights_path(self, model_cfg: dict) -> Path:
         """Resolve and validate the configured model checkpoint path."""
@@ -167,6 +169,26 @@ class FallDetector:
         self._running = True
 
         src = source if source is not None else self._camera_source
+
+        if src == "shared_queue":
+            self._logger.info(
+                f"Fall detector started | camera={camera_id} | source=shared_queue | "
+                f"device={self._device} | model={self._config['model']['architecture']}"
+            )
+            try:
+                while self._running:
+                    try:
+                        frame, timestamp_ms = self._frame_queue.get(timeout=0.1)
+                        await self._process_frame(frame, timestamp_ms, show_preview)
+                    except queue.Empty:
+                        await asyncio.sleep(0.01)
+                        continue
+            except KeyboardInterrupt:
+                self._logger.info("Interrupted by user.")
+            finally:
+                await self.stop()
+            return
+
         self._capture = cv2.VideoCapture(src)
 
         if not self._capture.isOpened():
@@ -227,6 +249,15 @@ class FallDetector:
         self._logger.info(
             f"Fall detector stopped | {self._logger.get_stats()}"
         )
+
+    def push_frame(self, frame: np.ndarray, timestamp_ms: int):
+        if not self._running:
+            return
+        try:
+            self._frame_queue.put_nowait((frame, timestamp_ms))
+        except queue.Full:
+            pass
+
 
     async def _process_frame(
         self,
