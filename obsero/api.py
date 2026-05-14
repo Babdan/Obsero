@@ -900,6 +900,8 @@ async function saveOpsModal(){
   };
   const r1 = await opsPost('/api/incidents/'+id+'/label', data);
   if(!r1.ok){ opsSetMsg('Update failed for incident '+id, true); return; }
+  let saved = {};
+  try { saved = await r1.clone().json(); } catch(e) {}
 
   const assignee = (document.getElementById('opsFAssignee').value || '').trim();
   if(assignee){
@@ -908,7 +910,8 @@ async function saveOpsModal(){
   }
 
   closeOpsModal();
-  opsSetMsg('Incident '+id+' updated.');
+  const extra = saved.feedback && saved.feedback.exported ? ' Training example saved.' : '';
+  opsSetMsg('Incident '+id+' updated.' + extra);
   refreshOpsQueue();
 }
 async function opsLabel(id){
@@ -916,7 +919,10 @@ async function opsLabel(id){
   if(!status){ return; }
   const r = await opsPost('/api/incidents/'+id+'/label', {status:status, actor:'ui', reviewer:'operator'});
   if(!r.ok){ opsSetMsg('Status update failed for incident '+id, true); return; }
-  opsSetMsg('Updated incident '+id+' to '+status);
+  let saved = {};
+  try { saved = await r.clone().json(); } catch(e) {}
+  const extra = saved.feedback && saved.feedback.exported ? ' Training example saved.' : '';
+  opsSetMsg('Updated incident '+id+' to '+status+'.' + extra);
   refreshOpsQueue();
 }
 async function opsClose(id){
@@ -1169,6 +1175,33 @@ from obsero.db import (cameras_all, camera_by_id, camera_upsert, camera_set_onli
                         incident_transition, incident_merge, incident_queue,
                         incident_update_fields, incident_timeline, alert_get,
                         ops_kpi)
+from obsero.training_feedback import export_reviewed_fall_feedback
+
+
+def _fall_feedback_dir() -> str | None:
+    cfg = getattr(S, "cfg", None)
+    fall_cfg = getattr(cfg, "fall_detection", None)
+    return getattr(fall_cfg, "feedback_dir", None)
+
+
+def _export_fall_feedback(alert_id: int, status: str, reviewer: str,
+                          note: str = "", actor: str = "operator") -> dict | None:
+    if status != "false_positive":
+        return None
+    try:
+        result = export_reviewed_fall_feedback(
+            alert_id,
+            status,
+            reviewer,
+            note=note,
+            feedback_dir=_fall_feedback_dir(),
+        )
+    except Exception as exc:
+        audit(actor, "fall_feedback_export_failed", f"{alert_id}:{exc}")
+        return {"exported": False, "error": str(exc)}
+    if result:
+        audit(actor, "fall_feedback_export", f"{alert_id}:{result.get('case_dir')}")
+    return result
 
 
 @app.get("/api/status")
@@ -1451,8 +1484,15 @@ def api_incident_label(incident_id: int,
         incident_transition(incident_id, status, actor=actor, note=note, reviewer=reviewer)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    feedback = _export_fall_feedback(
+        incident_id,
+        status,
+        reviewer=reviewer,
+        note=note,
+        actor=actor,
+    )
     audit(actor, "incident_label", f"{incident_id}:{status}")
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "feedback": feedback})
 
 
 @app.post("/api/incidents/{incident_id}/close")
@@ -1555,6 +1595,7 @@ def api_alert_label(alert_id: int = Form(...),
         alert_update_status(alert_id, status, reviewer)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=400)
+    _export_fall_feedback(alert_id, status, reviewer=reviewer, actor=reviewer)
     audit(reviewer, "alert_label", f"{alert_id}:{status}")
     return PlainTextResponse("ok")
 

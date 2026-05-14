@@ -15,7 +15,7 @@ from __future__ import annotations
 import datetime, json, os, queue, signal, sys, threading, time, traceback
 from collections import deque
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import cv2
 import numpy as np
@@ -23,7 +23,6 @@ import multiprocessing as mp
 
 # ── paths ──
 ROOT = Path(__file__).resolve().parent.parent
-MODELS_DIR = ROOT / "models"
 INCIDENTS_DIR = ROOT / "incidents"
 INCIDENTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -59,7 +58,7 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
     """
     import torch
     from ultralytics import YOLO
-    from obsero.models import resolve_weight_path_for_gpu
+    from obsero.models import resolve_pytorch_weight_path, resolve_weight_path_for_gpu
 
     # Prevent Ctrl+C from hard-aborting child processes on Windows.
     try:
@@ -84,16 +83,16 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
     if path is None:
         print(f"[{proc_name}] ERROR: no weights found for stem={stem}", flush=True)
         return
-    pt_path = MODELS_DIR / f"{stem}.pt"
+    pt_path = resolve_pytorch_weight_path(stem)
 
     try:
         model = YOLO(str(path), task="detect")
         print(f"[{proc_name}] loaded {'TRT' if is_trt else 'PT'}: {path.name}", flush=True)
     except Exception as e:
         # TRT engine may fail on incompatible GPU — fall back to .pt
-        print(f"[{proc_name}] TRT load failed ({e}), trying .pt fallback …", flush=True)
-        pt_path = MODELS_DIR / f"{stem}.pt"
-        if pt_path.exists():
+        label = "TRT" if is_trt else "model"
+        print(f"[{proc_name}] {label} load failed ({e}), trying .pt fallback …", flush=True)
+        if pt_path is not None and pt_path.exists():
             try:
                 model = YOLO(str(pt_path), task="detect")
                 is_trt = False
@@ -134,7 +133,7 @@ def mp_infer_worker(proc_name: str, stem: str, conf_thr: float,
                 output_q.put((camera_id, tag, dets, names, gpu_id, model_key))
             except Exception as e:
                 # Some TRT failures happen on first predict() (not model init).
-                if is_trt and pt_path.exists():
+                if is_trt and pt_path is not None and pt_path.exists():
                     print(f"[{proc_name}] TRT runtime error ({e}); switching to PT fallback", flush=True)
                     try:
                         model = YOLO(str(pt_path), task="detect")
@@ -323,7 +322,8 @@ def camera_router_thread(out_q: mp.Queue, fanout: FanOut,
                          get_active: Callable[[], int | None],
                          stop: threading.Event,
                          set_online_cb: Callable[[int], None],
-                         last_seen: dict[int, float]):
+                         last_seen: dict[int, float],
+                         get_fall_manager: Callable[[], Any] | None = None):
     """
     Reads (camera_id, jpeg) from camera processes, stores raw snapshot,
     feeds fanout, pushes active camera frames to display queue.
@@ -344,14 +344,18 @@ def camera_router_thread(out_q: mp.Queue, fanout: FanOut,
         # fan out to model workers
         fanout.send(jpeg_small, camera_id)
 
-        # push to external fall detection
-        from obsero.api import S
-        fall_mgr = getattr(S, 'fall_detection_mgr', None)
-        if fall_mgr:
+        frame = None
+
+        # push to external fall detection when the TCN manager is live
+        fall_mgr = get_fall_manager() if get_fall_manager is not None else None
+        if fall_mgr is not None and getattr(fall_mgr, "is_running", lambda: False)():
+            timestamp_ms = int(time.time() * 1000)
+            if hasattr(fall_mgr, "record_frame"):
+                fall_mgr.record_frame(camera_id, jpeg_small, timestamp_ms)
             arr = np.frombuffer(jpeg_small, np.uint8)
             frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is not None:
-                fall_mgr.push_frame(camera_id, frame, int(time.time() * 1000))
+                fall_mgr.push_frame(camera_id, frame, timestamp_ms)
 
         # mark camera online (once)
         if camera_id not in seen_online:
@@ -364,8 +368,9 @@ def camera_router_thread(out_q: mp.Queue, fanout: FanOut,
         # push raw frame to display queue for active camera
         active = get_active()
         if active == camera_id:
-            arr = np.frombuffer(jpeg_small, np.uint8)
-            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                arr = np.frombuffer(jpeg_small, np.uint8)
+                frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if frame is not None:
                 if not display_q.empty():
                     try:

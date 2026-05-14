@@ -71,6 +71,10 @@ class FallDetectionCfg:
     camera_ids: list[int] = field(default_factory=list)
     snapshot_dir: str = "incidents/fall_detection"
     log_dir: str = "data/fall_detection/logs"
+    clip_dir: str = "incidents/fall_detection/clips"
+    feedback_dir: str = "data/fall_detection/training_feedback"
+    clip_seconds: float = 8.0
+    clip_fps: int = 10
     disable_builtin_fall_model: bool = False
 
 
@@ -175,6 +179,12 @@ def _parse_config(raw: dict[str, Any]) -> SystemConfig:
         camera_ids=[int(cid) for cid in fall_raw.get("camera_ids", [])],
         snapshot_dir=str(fall_raw.get("snapshot_dir", "incidents/fall_detection")),
         log_dir=str(fall_raw.get("log_dir", "data/fall_detection/logs")),
+        clip_dir=str(fall_raw.get("clip_dir", "incidents/fall_detection/clips")),
+        feedback_dir=str(fall_raw.get(
+            "feedback_dir", "data/fall_detection/training_feedback"
+        )),
+        clip_seconds=float(fall_raw.get("clip_seconds", 8.0)),
+        clip_fps=int(fall_raw.get("clip_fps", 10)),
         disable_builtin_fall_model=bool(fall_raw.get("disable_builtin_fall_model", False)),
     )
 

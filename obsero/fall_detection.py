@@ -15,6 +15,7 @@ import inspect
 import json
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 from typing import Any, Callable
@@ -22,6 +23,7 @@ from typing import Any, Callable
 import yaml
 
 from obsero.config import FallDetectionCfg
+from obsero.training_feedback import FallClipBuffer
 
 ROOT = Path(__file__).resolve().parent.parent
 INCIDENTS_DIR = ROOT / "incidents"
@@ -176,17 +178,21 @@ def _level_from_severity(severity: str | None) -> str:
     return "low"
 
 
-def _event_to_rule_json(event: Any) -> str:
+def _event_to_rule_json(event: Any, obsero_meta: dict[str, Any] | None = None) -> str:
     data = event.to_dict() if hasattr(event, "to_dict") else {}
-    return json.dumps({
+    payload = {
         "source": "pose_fall_detection",
         "event": data,
-    }, sort_keys=True, default=str)
+    }
+    if obsero_meta:
+        payload["obsero"] = obsero_meta
+    return json.dumps(payload, sort_keys=True, default=str)
 
 
 def _install_alarm_bridge(detector_module: Any,
                           alert_writer: AlertWriter,
-                          audit_writer: AuditWriter) -> None:
+                          audit_writer: AuditWriter,
+                          clip_saver: Callable[[Any], dict[str, Any] | None] | None = None) -> None:
     original_cls = getattr(detector_module, "AlarmInterface", None)
     if original_cls is None or getattr(original_cls, "_obsero_bridge", False):
         return
@@ -203,6 +209,15 @@ def _install_alarm_bridge(detector_module: Any,
             severity = str(getattr(event, "severity", "") or "")
             snapshot = _relative_incident_path(getattr(event, "snapshot_path", None))
             label = "FALL:confirmed" if confirmed else "FALL:suspected"
+            obsero_meta: dict[str, Any] = {}
+            if clip_saver is not None:
+                try:
+                    clip_info = clip_saver(event)
+                except Exception as exc:
+                    print(f"[fall-detection] could not save event clip: {exc}", flush=True)
+                    clip_info = None
+                if clip_info:
+                    obsero_meta["clip"] = clip_info
 
             alert_writer(
                 ts,
@@ -217,7 +232,7 @@ def _install_alarm_bridge(detector_module: Any,
                 status="new",
                 model_key="pose_fall_detection",
                 gpu_id=None,
-                rule_json=_event_to_rule_json(event),
+                rule_json=_event_to_rule_json(event, obsero_meta),
                 full_image=snapshot,
             )
             audit_writer(
@@ -259,6 +274,9 @@ class _FallDetectorRuntime:
         if self.detector and hasattr(self.detector, 'push_frame'):
             self.detector.push_frame(frame, timestamp_ms)
 
+    def is_running(self) -> bool:
+        return self.thread is not None and self.thread.is_alive()
+
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
         self.loop = loop
@@ -292,6 +310,7 @@ class ExternalFallDetectionManager:
         self.alert_writer = alert_writer
         self.audit_writer = audit_writer
         self.instances: list[_FallDetectorRuntime] = []
+        self.clip_buffer: FallClipBuffer | None = None
 
     def start(self) -> None:
         if not self.cfg.enabled:
@@ -301,8 +320,15 @@ class ExternalFallDetectionManager:
         config_path = _resolve_repo_path(self.cfg.config_path)
         snapshot_dir = _resolve_repo_path(self.cfg.snapshot_dir) or (INCIDENTS_DIR / "fall_detection")
         log_dir = _resolve_repo_path(self.cfg.log_dir) or (ROOT / "data" / "fall_detection" / "logs")
+        clip_dir = _resolve_repo_path(self.cfg.clip_dir) or (snapshot_dir / "clips")
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         log_dir.mkdir(parents=True, exist_ok=True)
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        self.clip_buffer = FallClipBuffer(
+            clip_dir,
+            duration_sec=self.cfg.clip_seconds,
+            fps=self.cfg.clip_fps,
+        )
 
         if project_dir is None or not project_dir.exists():
             print(f"[fall-detection] project directory not found: {project_dir}", flush=True)
@@ -312,7 +338,12 @@ class ExternalFallDetectionManager:
         if detector_cls is None or detector_module is None:
             return
 
-        _install_alarm_bridge(detector_module, self.alert_writer, self.audit_writer)
+        _install_alarm_bridge(
+            detector_module,
+            self.alert_writer,
+            self.audit_writer,
+            self._save_event_clip,
+        )
         runtime_config = _update_external_config(config_path, snapshot_dir, log_dir)
         if runtime_config is None:
             print("[fall-detection] no config path available", flush=True)
@@ -342,10 +373,27 @@ class ExternalFallDetectionManager:
             instance.stop()
         self.instances.clear()
 
+    def is_running(self) -> bool:
+        return any(instance.is_running() for instance in self.instances)
+
+    def record_frame(self, camera_id: int, jpeg_bytes: bytes, timestamp_ms: int) -> None:
+        if self.clip_buffer is not None:
+            self.clip_buffer.record_frame(camera_id, jpeg_bytes, timestamp_ms)
+
     def push_frame(self, camera_id: int, frame: Any, timestamp_ms: int) -> None:
         for instance in self.instances:
             if instance.camera_id == camera_id:
                 instance.push_frame(frame, timestamp_ms)
+
+    def _save_event_clip(self, event: Any) -> dict[str, Any] | None:
+        if self.clip_buffer is None:
+            return None
+        camera_id = _event_camera_id(event)
+        if camera_id is None:
+            return None
+        event_id = str(getattr(event, "event_id", "") or "")
+        timestamp_ms = int(getattr(event, "timestamp_ms", 0) or time.time() * 1000)
+        return self.clip_buffer.save_clip(camera_id, event_id, timestamp_ms)
 
     def _selected_sources(self) -> dict[int, object]:
         if not self.cfg.camera_ids:

@@ -145,7 +145,7 @@ class DebugLogger:
         sequence: np.ndarray,
         metadata: dict,
         label: str,
-    ):
+    ) -> dict | None:
         """
         Save a keypoint sequence to disk for debugging or training.
 
@@ -155,23 +155,29 @@ class DebugLogger:
             label: "fall" or "normal" label for the sequence.
         """
         if not self._enabled or not self._save_keypoints:
-            return
+            return None
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"seq_{self._camera_id}_{label}_{timestamp}"
+        sequence_path = self._keypoint_dir / f"{filename}.npy"
+        metadata_path = self._keypoint_dir / f"{filename}_meta.json"
 
         # Save keypoints as numpy
-        np.save(str(self._keypoint_dir / f"{filename}.npy"), sequence)
+        np.save(str(sequence_path), sequence)
 
         # Save metadata
         meta = {**metadata, "label": label, "shape": list(sequence.shape)}
-        with open(
-            self._keypoint_dir / f"{filename}_meta.json", "w", encoding="utf-8"
-        ) as f:
+        with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, default=str)
 
         self._logger.debug(f"Sequence saved: {filename}")
         self._cleanup_old_files(self._keypoint_dir, "*.npy")
+        return {
+            "sequence_path": str(sequence_path),
+            "metadata_path": str(metadata_path),
+            "label": label,
+            "shape": list(sequence.shape),
+        }
 
     def save_snapshot(
         self, frame: np.ndarray, label: str

@@ -4,7 +4,7 @@
 
 # --- Pose Extraction (MediaPipe Tasks API) ---
 pose:
-  model_path: "models/pose_landmarker_heavy.task"
+  model_path: "../models/tcn-mediapipe/pose_landmarker_heavy.task"
   min_detection_confidence: 0.5
   min_tracking_confidence: 0.5
   static_image_mode: false
@@ -37,7 +37,7 @@ model:
   num_layers: 2
   bidirectional: false
   # Model weights
-  weights_path: "models/fall_detector_tcn.pth"
+  weights_path: "../models/tcn-mediapipe/fall_detector_tcn.pth"
   allow_untrained: false             # Only set true for non-production tests
 
 # --- Decision Logic ---

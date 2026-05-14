@@ -1,7 +1,7 @@
 # Obsero — Enterprise Safety Panel (Open Source)
 
 Real-time multi-camera AI safety monitoring for factories.  
-Detects PPE violations, smoking, phone use, fire/smoke, and falls using YOLO models accelerated by TensorRT.
+Detects PPE violations, smoking, phone use, fire/smoke, and falls using YOLO plus MediaPipe/TCN models.
 
 ---
 
@@ -88,9 +88,9 @@ pass, reducing false positives to meet the 80 % precision target.
 
 ### External Fall Detector Adapter
 
-Obsero can also run a separate fall-detection project beside the built-in YOLO
-`fall` model. Enable it after placing detector code in `fall-detection/` with a
-`FallDetector` class:
+Obsero runs the bundled MediaPipe + TCN fall detector beside the YOLO workers.
+By default this replaces the built-in YOLO `fall` worker so fall detection uses
+the temporal pose model:
 
 ```yaml
 fall_detection:
@@ -99,15 +99,22 @@ fall_detection:
   config_path: fall-detection/config/fall_detection_config.yaml
   snapshot_dir: incidents/fall_detection
   log_dir: data/fall_detection/logs
-  disable_builtin_fall_model: false
+  clip_dir: incidents/fall_detection/clips
+  feedback_dir: data/fall_detection/training_feedback
+  clip_seconds: 8.0
+  clip_fps: 10
+  disable_builtin_fall_model: true
 ```
 
-The adapter starts one detector per Obsero camera source, calls
-`FallDetector.start(...)`, and bridges emitted `FallAlarmEvent` objects into
-Obsero `FALL` alerts, snapshots, and audit logs. It writes a generated runtime
-config under `data/fall_detection/` so the detector's original YAML stays
-unchanged. If the external detector should fully replace the built-in YOLO fall
-worker, set `disable_builtin_fall_model: true`.
+The adapter starts one detector per Obsero camera source, feeds frames through
+`FallDetector.start(..., source="shared_queue")`, and bridges emitted
+`FallAlarmEvent` objects into Obsero `FALL` alerts, snapshots, and audit logs.
+It writes a generated runtime config under `data/fall_detection/` so logs and
+snapshots stay in Obsero-owned directories.
+
+When a fall alert is reviewed as `false_positive`, Obsero exports a negative
+training example under `data/fall_detection/training_feedback/negative/` with
+the incident snapshot, recent clip, keypoint sequence, and manifest metadata.
 
 ### Camera Offline Detection
 
@@ -127,11 +134,14 @@ actually needed by camera assignments.
 
 | Cameras     | `gpu_id` | Workers spawned on GPU |
 |-------------|----------|------------------------|
-| CH1 … CH8  | 0        | ppe_gpu0, smoke_gpu0, phone_gpu0, fire_smoke_gpu0, fall_gpu0 |
-| CH9 … CH16 | 1        | ppe_gpu1, smoke_gpu1, phone_gpu1, fire_smoke_gpu1, fall_gpu1 |
+| CH1 … CH8  | 0        | ppe_gpu0, smoke_gpu0, phone_gpu0, fire_smoke_gpu0 |
+| CH9 … CH16 | 1        | ppe_gpu1, smoke_gpu1, phone_gpu1, fire_smoke_gpu1 |
 
 Frames from a camera are routed **only** to workers on the camera's assigned
 GPU.  No NVLink required.
+
+The MediaPipe/TCN fall detector runs as a separate shared-frame manager and is
+not counted as a YOLO GPU worker.
 
 Inside each worker, `torch.cuda.set_device(gpu_id)` is called, and
 `model.predict(device=gpu_id)` is used.
@@ -145,17 +155,23 @@ separate TRT engines:
 
 ```
 models/
-  helmet_vest_best_sm86.engine   ← used on GPU 0 (Ampere)
-  helmet_vest_best_sm89.engine   ← used on GPU 1 (Ada Lovelace)
-  helmet_vest_best.engine        ← generic fallback
-  helmet_vest_best.pt            ← PyTorch fallback
+  yolo/
+    helmet_vest_best_sm86.engine   ← used on GPU 0 (Ampere)
+    helmet_vest_best_sm89.engine   ← used on GPU 1 (Ada Lovelace)
+    helmet_vest_best.engine        ← generic fallback
+    helmet_vest_best.pt            ← PyTorch fallback
+  tcn-mediapipe/
+    pose_landmarker_heavy.task
+    fall_detector_tcn.pth
 ```
 
 **Search order** per worker:
 
-1. `models/{stem}_{smXX}.engine`  — architecture-specific TRT engine
-2. `models/{stem}.engine`         — generic TRT engine
-3. `models/{stem}.pt`             — PyTorch weights
+1. `models/yolo/{stem}_{smXX}.engine`  — architecture-specific TRT engine
+2. `models/yolo/{stem}.engine`         — generic TRT engine
+3. `models/yolo/{stem}.pt`             — PyTorch weights
+
+Legacy root-level `models/{stem}.*` files still work as a fallback.
 
 If a TRT engine fails to load at runtime (incompatible build), the worker
 automatically falls back to `.pt` and logs a warning.
@@ -164,12 +180,12 @@ automatically falls back to `.pt` and logs a warning.
 
 ```bash
 # On a machine with GPU sm86:
-python export_to_trt.py --weights models/helmet_vest_best.pt --device 0
-mv models/helmet_vest_best.engine models/helmet_vest_best_sm86.engine
+python export_to_trt.py --weights models/yolo/helmet_vest_best.pt --device 0
+mv models/yolo/helmet_vest_best.engine models/yolo/helmet_vest_best_sm86.engine
 
 # On a machine with GPU sm89:
-python export_to_trt.py --weights models/helmet_vest_best.pt --device 0
-mv models/helmet_vest_best.engine models/helmet_vest_best_sm89.engine
+python export_to_trt.py --weights models/yolo/helmet_vest_best.pt --device 0
+mv models/yolo/helmet_vest_best.engine models/yolo/helmet_vest_best_sm89.engine
 ```
 
 ---
@@ -266,10 +282,12 @@ obsero/
   workers.py              ← camera procs, model workers, router, composer
   api.py                  ← FastAPI app + all routes + HTML UI
 models/
-  *.engine / *.pt         ← YOLO weights
+  yolo/                   ← YOLO .engine / .pt weights
+  tcn-mediapipe/          ← MediaPipe task + TCN checkpoint
 incidents/                ← saved evidence images
 data/
   panel.db                ← SQLite database
+  fall_detection/         ← generated config, logs, and training feedback
 ```
 
 ### Legacy files

@@ -1,12 +1,14 @@
 """
 obsero.models — Weight resolution with heterogeneous multi-GPU support.
 
-Search order for a given stem + gpu_id:
+Search order for a given YOLO stem + gpu_id:
     If TensorRT bindings are available:
-        1) models/{stem}_sm{XX}.engine (arch-specific TRT)
-        2) models/{stem}.engine        (generic TRT)
+        1) models/yolo/{stem}_sm{XX}.engine (arch-specific TRT)
+        2) models/yolo/{stem}.engine        (generic TRT)
     Always:
-        3) models/{stem}.pt            (PyTorch fallback)
+        3) models/yolo/{stem}.pt            (PyTorch fallback)
+
+Root-level models/{stem}.* paths are kept as a compatibility fallback.
 """
 
 from __future__ import annotations
@@ -16,6 +18,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = ROOT / "models"
+YOLO_MODELS_DIR = MODELS_DIR / "yolo"
+
+
+def _yolo_model_dirs() -> tuple[Path, Path]:
+    """Prefer the organized YOLO folder, then old root-level model paths."""
+    return YOLO_MODELS_DIR, MODELS_DIR
 
 
 def _tensorrt_available() -> bool:
@@ -54,19 +62,30 @@ def resolve_weight_path_for_gpu(stem: str, gpu_id: int) -> tuple[Path | None, bo
 
     # 1) arch-specific engine (only if TensorRT runtime is available)
     if trt_ok and cap:
-        arch_engine = MODELS_DIR / f"{stem}_{cap}.engine"
-        if arch_engine.exists():
-            return arch_engine, True
+        for model_dir in _yolo_model_dirs():
+            arch_engine = model_dir / f"{stem}_{cap}.engine"
+            if arch_engine.exists():
+                return arch_engine, True
 
     # 2) generic engine (only if TensorRT runtime is available)
     if trt_ok:
-        generic_engine = MODELS_DIR / f"{stem}.engine"
-        if generic_engine.exists():
-            return generic_engine, True
+        for model_dir in _yolo_model_dirs():
+            generic_engine = model_dir / f"{stem}.engine"
+            if generic_engine.exists():
+                return generic_engine, True
 
     # 3) fallback to PyTorch
-    pt = MODELS_DIR / f"{stem}.pt"
-    if pt.exists():
+    pt = resolve_pytorch_weight_path(stem)
+    if pt is not None:
         return pt, False
 
     return None, False
+
+
+def resolve_pytorch_weight_path(stem: str) -> Path | None:
+    """Resolve the PyTorch fallback for a YOLO model stem."""
+    for model_dir in _yolo_model_dirs():
+        pt = model_dir / f"{stem}.pt"
+        if pt.exists():
+            return pt
+    return None

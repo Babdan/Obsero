@@ -1,20 +1,45 @@
-# export_to_trt.py
-from ultralytics import YOLO
+from __future__ import annotations
+
+import argparse
 from pathlib import Path
 
-MODELS = Path("models")
-IMG_SIZE = 640  # must match your runtime size
+DEFAULT_MODELS_DIR = Path("models") / "yolo"
+IMG_SIZE = 640
 
-for pt in MODELS.glob("*.pt"):
-    print(f"Exporting {pt} -> TensorRT engine (FP16, dynamic)")
-    model = YOLO(str(pt))
-    # creates models/<name>.engine next to the .pt
+
+def export_weight(path: Path, device: int, img_size: int) -> None:
+    from ultralytics import YOLO
+
+    print(f"Exporting {path} -> TensorRT engine (FP16, dynamic)")
+    model = YOLO(str(path))
     model.export(
         format="engine",
-        device=0,        # your RTX 5090
-        half=True,       # FP16
-        imgsz=IMG_SIZE,
-        dynamic=True,    # dynamic shapes
-        workspace=4096   # MB, adjust if needed
+        device=device,
+        half=True,
+        imgsz=img_size,
+        dynamic=True,
+        workspace=4096,
     )
-print("Done.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Export YOLO .pt weights to TensorRT engines.")
+    parser.add_argument("--weights", type=Path, help="Specific .pt file to export.")
+    parser.add_argument("--models-dir", type=Path, default=DEFAULT_MODELS_DIR,
+                        help="Directory of .pt files to export when --weights is omitted.")
+    parser.add_argument("--device", type=int, default=0, help="CUDA device index.")
+    parser.add_argument("--imgsz", type=int, default=IMG_SIZE, help="Export image size.")
+    args = parser.parse_args()
+
+    weights = [args.weights] if args.weights else sorted(args.models_dir.glob("*.pt"))
+    if not weights:
+        print(f"No .pt files found in {args.models_dir}")
+        return
+
+    for path in weights:
+        export_weight(path, args.device, args.imgsz)
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()

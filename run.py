@@ -193,7 +193,8 @@ def backend_bootstrap(cfg: SystemConfig, camera_out_q: mp.Queue, dev_mode: bool 
                   lambda: cam_mgr.active_camera_id,
                   stop,
                   lambda cid: camera_set_online(cid, True),
-                  last_seen),
+                  last_seen,
+                  lambda: getattr(S, "fall_detection_mgr", None)),
             daemon=True,
         ).start()
 

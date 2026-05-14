@@ -109,6 +109,7 @@ class FallDetector:
 
         # ── State ──────────────────────────────────────────────────────────
         self._running = False
+        self._stop_logged = False
         self._capture: Optional[cv2.VideoCapture] = None
 
         # Raw keypoints buffer for posture rules (un-normalized)
@@ -167,6 +168,7 @@ class FallDetector:
         self._camera_id = camera_id
         self._logger.set_camera_id(camera_id)
         self._running = True
+        self._stop_logged = False
 
         src = source if source is not None else self._camera_source
 
@@ -246,9 +248,11 @@ class FallDetector:
         self._pose_extractor.close()
         cv2.destroyAllWindows()
 
-        self._logger.info(
-            f"Fall detector stopped | {self._logger.get_stats()}"
-        )
+        if not self._stop_logged:
+            self._logger.info(
+                f"Fall detector stopped | {self._logger.get_stats()}"
+            )
+            self._stop_logged = True
 
     def push_frame(self, frame: np.ndarray, timestamp_ms: int):
         if not self._running:
@@ -370,12 +374,9 @@ class FallDetector:
                     },
                 )
 
-                self._alarm.emit(event)
-                self._logger.log_event(event.to_dict())
-
                 # Save keypoint sequence for future training
                 seq, ts = self._buffer.get_sequence()
-                self._logger.save_sequence(
+                sequence_info = self._logger.save_sequence(
                     seq,
                     metadata={
                         "camera_id": self._camera_id,
@@ -387,6 +388,11 @@ class FallDetector:
                     },
                     label="fall" if confirmed else "suspected",
                 )
+                if sequence_info:
+                    event.metadata["sequence"] = sequence_info
+
+                self._alarm.emit(event)
+                self._logger.log_event(event.to_dict())
 
                 self._last_alarm_time = time.time()
 

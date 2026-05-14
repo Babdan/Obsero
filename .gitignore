@@ -24,4 +24,7 @@ data/reports/
 models/*.pt
 models/*.onnx
 models/*.engine
+models/yolo/*.pt
+models/yolo/*.onnx
+models/yolo/*.engine
 opencode.json

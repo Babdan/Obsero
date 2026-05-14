@@ -1,1 +1,2 @@
-# Placeholder — trained model weights will be saved here
+# Placeholder for standalone detector runs.
+# Obsero stores runtime TCN/MediaPipe assets in ../../models/tcn-mediapipe/.

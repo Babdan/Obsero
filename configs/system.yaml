@@ -84,4 +84,8 @@ fall_detection:
   camera_ids: []
   snapshot_dir: incidents/fall_detection
   log_dir: data/fall_detection/logs
-  disable_builtin_fall_model: false
+  clip_dir: incidents/fall_detection/clips
+  feedback_dir: data/fall_detection/training_feedback
+  clip_seconds: 8.0
+  clip_fps: 10
+  disable_builtin_fall_model: true
