@@ -24,6 +24,8 @@ data/reports/
 models/*.pt
 models/*.onnx
 models/*.engine
+# Updated Model Weight .pt files (download manually — files are gitignored due to size):
+# https://drive.google.com/drive/folders/1BoI8iARDpWALHjKh3Gkq0SbmptSGcLE8?usp=drive_link+
 # Model sources (download manually — files are gitignored due to size):
 #   heavy_equipment.pt → https://huggingface.co/thalostech2025/thalos-heavy-equipment-v1
 opencode.json
