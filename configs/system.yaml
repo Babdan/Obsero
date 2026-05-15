@@ -47,6 +47,21 @@ models:
   - falldown
   - man_down
   cadence_every_n: 2
+- key: heavy_equipment
+  stem: heavy_equipment
+  conf_thr: 0.45
+  keywords:
+  - backhoe_loader
+  - compactor
+  - concrete_mixer_truck
+  - dozer
+  - dump_truck
+  - excavator
+  - grader
+  - mobile_crane
+  - tower_crane
+  - wheel_loader
+  cadence_every_n: 3
 rules:
   ppe:
     min_consecutive_frames: 3
@@ -73,6 +88,11 @@ rules:
     window_sec: 3.0
     min_ratio: 0.5
     cooldown_sec: 12.0
+  heavy_equipment:
+    min_consecutive_frames: 3
+    window_sec: 5.0
+    min_ratio: 0.4
+    cooldown_sec: 20.0
 camera_offline_timeout_sec: 15.0
 default_cooldown_sec: 60.0
 per_tag_cooldown:
