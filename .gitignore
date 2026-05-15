@@ -27,3 +27,4 @@ models/*.engine
 # Model sources (download manually — files are gitignored due to size):
 #   heavy_equipment.pt → https://huggingface.co/thalostech2025/thalos-heavy-equipment-v1
 opencode.json
+*.DS_Store
